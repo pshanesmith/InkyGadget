@@ -1,8 +1,7 @@
 # InkyGadget
 
-Bedside photo frame: Raspberry Pi Zero W (ARMv6, 32-bit, 426 MB RAM) + Inky Impression 5.7" (UC8159, 600x448), Rust.
-See README.md (use) and PLAN.md (decisions, measurements). Sibling project with the same deployment style:
-../LEDMatrixGadget.
+Photo frame: Raspberry Pi Zero W (ARMv6, 32-bit, 426 MB RAM) + Inky Impression 5.7" (UC8159, 600x448), Rust.
+See README.md (use, how it works, measurements). Sibling project with the same deployment style: ../LEDMatrixGadget.
 
 ## Workflow: develop on the Mac, test on the Pi
 - Rust toolchain may not be on PATH: `export PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:/opt/homebrew/bin:$PATH"`.
@@ -23,6 +22,24 @@ See README.md (use) and PLAN.md (decisions, measurements). Sibling project with 
 - Overlay is drawn after dithering in palette indices (crisp text). The date format is local time; the clock must be NTP-set
   (`/run/systemd/timesync/synchronized`) or the date is skipped.
 - Buttons call `scene.*`/`script.*` through the HA REST API; `next_photo` is built in. Min gap between panel refreshes: `display.min_refresh_seconds`.
+
+## Decisions worth remembering
+- **The share is polled** every 30 s, not watched with inotify: one cheap directory walk, no dependency, and the "unchanged
+  between two scans" rule handles half-copied files. Samba runs only `smbd` (SMB2+, bound to lo and wlan0, `nmbd` off,
+  `_smb._tcp` advertised through avahi); there is no practical pure-Rust SMB server, and it is the only extra package (11).
+- **HEIC** is `heic-rs` (pure Rust, MIT/Apache), streamed per tile (`src/heic_stream.rs`, with its own YCbCr to RGB; it falls back
+  to `heic_rs::decode` for crops, mirrors and unusual matrices). Rejected: `heic` (AGPL), system libheif (works, since Raspberry
+  Pi's armhf repo has ARMv6 builds, but needs more packages and was not needed). Never hold a full-size image on the Pi.
+- **The panel** should refresh no more often than every few minutes and at least once a day (Pimoroni); `min_refresh_seconds`
+  enforces the floor, also for button D. No deep sleep after power-off (`DSLP`): unmeasurable gain, unverifiable without the panel.
+- **systemd unit**: do not add `PrivateDevices`, `DevicePolicy` or `ProtectClock` (each turns the device list into an allow-list that
+  excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
+  does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it
+  should be the one restarted. `TimeoutStopSec=90` lets a stop wait for a refresh to finish.
+- **Setup scripts** are dry runs unless given `--apply`, back up what they change under `/var/backups/inkyframe-setup`, and never
+  reboot. Boot settings (SPI, no Bluetooth/audio/camera/HDMI, `gpu_mem=16`) live only in `02-inky-setup.sh`.
+- **Config** is validated at load (`inkyframe check-config`); the installer runs it before restarting the service, so a typo
+  cannot leave the frame in a restart loop.
 
 ## Publishing
 - Once per clone: `git config core.hooksPath .githooks` and `git config user.email ID+NAME@users.noreply.github.com` (the hook

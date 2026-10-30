@@ -17,7 +17,43 @@ on the side run Home Assistant scenes or scripts, and the fourth shows the next 
 - **Power and packages**: no Python, no desktop, no Bluetooth/audio/HDMI stack; the only extra package is Samba.
   The panel keeps its picture with no power, so the Pi is idle almost all day.
 
-See [PLAN.md](PLAN.md) for the design decisions and the measurements behind them.
+## How it works
+
+One program (`inkyframe`, plain threads, no async runtime) runs as a single systemd service as an unprivileged user
+(groups `spi` and `gpio`).
+
+- **Library.** Every 30 seconds it looks at the share. A photo counts once its size and modification time are
+  unchanged between two looks, so a half-copied upload is never read (at start-up everything counts). A background
+  worker fits each new photo inside 600x448 and stores it as a JPEG in `/var/lib/inkyframe/cache`, keyed by name,
+  size and modification time. The originals are never touched; deleting a photo from the share removes its cache
+  file. A photo that cannot be decoded is logged and skipped, and a damaged cache file is dropped and decoded again.
+- **Refresh.** A photo is picked at random, with the history kept in `state.json` so nothing repeats until all have
+  been shown. It is dithered to the panel's measured colours (serpentine Floyd-Steinberg), then the date and
+  temperature plates are drawn on top in pure palette colours, so the text stays crisp. The frame goes to the
+  panel over SPI, which takes about 32 seconds. Refreshes are at least `display.min_refresh_seconds` apart (the
+  panel wears with use), a refresh missed while the Pi was off is made up on boot, and nothing is drawn with a date
+  until the clock has been set from the network (the Zero W has no clock of its own).
+- **Weather.** Open-Meteo, looked up once per day for the ZIP code you gave to `geocode`. If it cannot be fetched,
+  the temperatures are left off rather than shown stale.
+- **HEIC.** Decoded in pure Rust ([`heic-rs`](https://github.com/tbraun96/heic-rs)), one tile at a time, straight
+  into the downscaler, so a 12 or 24 MP iPhone photo needs about 10 MB of RAM. Photos it cannot stream (a crop, a
+  mirror, an unusual colour matrix) use the whole-image decoder, which needs about 220 MB for 24 MP, and
+  `max_pixels` (default 25 MP) keeps JPEG, PNG and that fallback within the board's memory. JPEG and PNG use the
+  `image` crate; their EXIF rotation is applied after shrinking.
+- **Buttons.** GPIO edge events call Home Assistant's REST API (`scene.turn_on` or `script.turn_on`) with the token
+  from `secrets.env`. A call is tried again only if it never reached Home Assistant, so a toggle cannot run twice.
+
+## Measured on a Pi Zero W (Raspberry Pi OS 13, 32-bit)
+
+| | |
+|---|---|
+| Installed packages | 640 on the stock image, 534 after `01-pi-setup.sh` and `02-inky-setup.sh` (Samba adds 11) |
+| RAM | 426 MB usable; about 140 MB in use on the whole system with everything running, of which the service itself is about 5 MB |
+| Panel refresh | about 32 s |
+| HEIC decode, 12 MP iPhone photo | 17 to 25 s once per photo, in the background, about 10 MB peak |
+| Decoding a 24 MP HEIC the old whole-image way | about 30 s and 218 MB (what streaming replaced) |
+
+Idle power has not been measured yet.
 
 ## Install on the Pi
 
@@ -98,3 +134,6 @@ The hardware driver (`--features hardware`) is Linux-only; `tools/cross-build.sh
 ## License
 
 GPL-3.0-only. See [NOTICE](NOTICE) for the Pimoroni driver port (MIT) and other credits.
+
+HEVC, the video format inside HEIC photos, is covered by third-party patents. The decoder crate grants a copyright
+licence only, and this project grants no patent rights; for a frame you build for yourself that is for you to weigh.
