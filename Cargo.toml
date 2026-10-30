@@ -1,6 +1,6 @@
 [package]
 name = "inkyframe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Bedside photo frame for a Pimoroni Inky Impression 5.7 inch e-paper display on a Raspberry Pi Zero W"
