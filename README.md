@@ -61,7 +61,8 @@ You need a Pi Zero W (or any 32-bit Raspberry Pi OS board) running **Raspberry P
 enabled, and the display on the 40-pin header. The first three steps are done once.
 
 ```bash
-# 1. Slim the OS (removes Bluetooth, camera and desktop leftovers, other models' kernels). Read the dry run first.
+# 1. Slim the OS (removes Bluetooth, camera and desktop leftovers, other models' kernels, and cloud-init once
+#    first boot is done and the network no longer needs it). Read the dry run first.
 sudo /opt/inkyframe/setup/01-pi-setup.sh            # dry run
 # 2. SPI, power-saving boot settings, the service account and the photo share. Prints the share password.
 sudo /opt/inkyframe/setup/02-inky-setup.sh --apply

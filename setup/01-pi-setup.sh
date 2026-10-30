@@ -4,7 +4,10 @@
 #   ./setup/01-pi-setup.sh                 dry run (default): shows everything, changes nothing
 #   sudo ./setup/01-pi-setup.sh --apply    do it (asks you to type 'yes' first)
 #
-# Options:  --aggressive   also remove cloud-init (only once you know the Pi's network does not depend on it)
+# cloud-init (first-boot provisioning that Raspberry Pi Imager uses) is removed too, but only if first boot has finished
+# and the network settings no longer depend on it (netplan files and the netplan generator are in place).
+#
+# Options:  --keep-cloud-init   do not remove cloud-init
 #           --no-auto-updates   do not set up unattended OS upgrades
 #           --yes          skip the confirmation prompt
 #           --only a,b     run only these steps   --skip a,b   skip these steps
@@ -18,17 +21,17 @@ source "$HERE/lib/common.sh"
 
 BOOT_DIR=${BOOT_DIR:-/boot/firmware}
 ALL_STEPS=(purge system update autoupdate verify)
-AGGRESSIVE=0; ASSUME_YES=0; AUTO_UPDATES=1; ONLY=""; SKIP=""
+KEEP_CLOUD_INIT=0; ASSUME_YES=0; AUTO_UPDATES=1; ONLY=""; SKIP=""
 
 while (( $# )); do
   case $1 in
     --apply) DRY_RUN=0 ;;
-    --aggressive) AGGRESSIVE=1 ;;
+    --keep-cloud-init) KEEP_CLOUD_INIT=1 ;;
     --yes) ASSUME_YES=1 ;;
     --no-auto-updates) AUTO_UPDATES=0 ;;
     --only) ONLY=$2; shift ;;
     --skip) SKIP=$2; shift ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
   esac
   shift
@@ -54,14 +57,34 @@ PURGE_CORE=(
   rpi-connect-lite                                         # Raspberry Pi Connect remote access; this frame is reached over SSH
   rpi-usb-gadget                                           # USB gadget (Ethernet over USB) mode, off by default
 )
-PURGE_AGGRESSIVE=(
-  cloud-init rpi-cloud-init-mods                           # first-boot provisioning, already done; left in by default because
-                                                           # it may own the Wi-Fi/network setup of a headless Pi
-)
+# First-boot provisioning (user, SSH, Wi-Fi from Raspberry Pi Imager). It has already run; its leftovers in /var/lib/cloud
+# can hold the Wi-Fi password in plain text. Removed only when cloud_init_removable says the network no longer needs it.
+PURGE_CLOUD_INIT=(cloud-init rpi-cloud-init-mods)
 # apt must never remove any of these (or anything matching), or the run aborts.
-PROTECT_RE='^(openssh-.*|ssh|network-manager|wpasupplicant|firmware-brcm80211|raspi-firmware|raspi-config|raspi-utils|raspberrypi-.*|userconf-pi|avahi-daemon|sudo|systemd.*|libsystemd.*|dbus.*|udev|libc6|apt|dpkg|bash|coreutils|login|passwd|initramfs-tools|linux-image-rpi-v6|linux-image-[0-9].*-rpi-v6|python3|python3-minimal|python3-gpiozero|python3-rpi-lgpio|python3-libgpiod|python3-spidev|python3-smbus2|samba.*|libsmbclient.*|libwbclient.*|curl|ca-certificates|cron|iproute2|iputils-ping|nftables|rsync|dhcpcd-base|base-files|netbase|init|kmod|sed|grep|tar|gzip|libnss-.*|libpam.*)$'
+PROTECT_RE='^(openssh-.*|ssh|network-manager|wpasupplicant|firmware-brcm80211|raspi-firmware|raspi-config|raspi-utils|raspberrypi-.*|userconf-pi|avahi-daemon|sudo|systemd.*|libsystemd.*|dbus.*|udev|libc6|apt|dpkg|bash|coreutils|login|passwd|initramfs-tools|linux-image-rpi-v6|linux-image-[0-9].*-rpi-v6|python3|python3-minimal|python3-gpiozero|python3-rpi-lgpio|python3-libgpiod|python3-spidev|python3-smbus2|samba.*|libsmbclient.*|libwbclient.*|curl|ca-certificates|cron|iproute2|iputils-ping|nftables|rsync|dhcpcd-base|netplan.*|libnetplan.*|python3-netplan|base-files|netbase|init|kmod|sed|grep|tar|gzip|libnss-.*|libpam.*)$'
 
 DISABLE_UNITS=(e2scrub_all.timer e2scrub_reap.service man-db.timer NetworkManager-wait-online.service hciuart.service bluetooth.service)
+
+# --- cloud-init ------------------------------------------------------------------
+# Wi-Fi set up in Raspberry Pi Imager is written by cloud-init into /etc/netplan, and NetworkManager rebuilds its
+# connections from those files at every boot (netplan-generator). Removing cloud-init keeps that working, but only if
+# those pieces exist. Returns 1 with CLOUD_REASON set when it is not safe.
+cloud_init_removable() {
+  CLOUD_REASON=""
+  if [[ ! -e /var/lib/cloud/instance/boot-finished ]]; then
+    CLOUD_REASON="first boot has not finished (no /var/lib/cloud/instance/boot-finished)"; return 1
+  fi
+  local nm_profiles=0 netplan_files=0
+  compgen -G "/etc/NetworkManager/system-connections/*" >/dev/null && nm_profiles=1
+  compgen -G "/etc/netplan/*.yaml" >/dev/null && netplan_files=1
+  if (( netplan_files )) && ! { installed netplan-generator || installed netplan.io; }; then
+    CLOUD_REASON="/etc/netplan has settings but the netplan generator is not installed"; return 1
+  fi
+  if (( ! nm_profiles && ! netplan_files )); then
+    CLOUD_REASON="no saved network settings found outside cloud-init (/etc/netplan, NetworkManager)"; return 1
+  fi
+  return 0
+}
 
 # --- steps -----------------------------------------------------------------------
 step_purge() {
@@ -71,7 +94,14 @@ step_purge() {
   # kernel headers explicitly. The v6 kernel image (this board's, and the running one) is kept.
   while read -r p; do list+=("$p"); done < <(dpkg-query -W -f='${Package}\n' \
       'linux-image-*-rpi-v7' 'linux-image-*-rpi-v7l' 'linux-image-*-rpi-v8' 'linux-image-*-rpi-2712' 'linux-headers-*-rpi-*' 'linux-base-*-rpi-2712' 2>/dev/null || true)
-  if (( AGGRESSIVE )); then list+=("${PURGE_AGGRESSIVE[@]}"); fi
+  local cloud_purge=0
+  if (( ! KEEP_CLOUD_INIT )) && installed cloud-init; then
+    if cloud_init_removable; then
+      list+=("${PURGE_CLOUD_INIT[@]}"); cloud_purge=1
+    else
+      warn "keeping cloud-init: $CLOUD_REASON"
+    fi
+  fi
   for p in "${list[@]}"; do if installed "$p"; then present+=("$p"); fi; done
   if (( ${#present[@]} == 0 )); then info "nothing to remove"; return 0; fi
   info "requested (installed): ${present[*]}"
@@ -91,6 +121,10 @@ step_purge() {
   run env DEBIAN_FRONTEND=noninteractive apt-get -y purge --auto-remove "${present[@]}"
   local rc; rc=$(dpkg -l | awk '/^rc/{print $2}' | tr '\n' ' ')
   if [[ -n $rc ]]; then run dpkg --purge $rc; fi
+  if (( cloud_purge )); then
+    # What cloud-init saved on first boot, including the Imager's user data (it can hold the Wi-Fi password).
+    run rm -rf /var/lib/cloud /var/log/cloud-init.log /var/log/cloud-init-output.log
+  fi
 }
 
 step_system() {

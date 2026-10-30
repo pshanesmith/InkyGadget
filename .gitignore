@@ -15,8 +15,6 @@ dist/
 # Family photos used for local previews
 samples/
 
-# Throwaway experiments (they hold a copy of a third-party driver and are not part of the project)
-spikes/
 
 .DS_Store
 .vscode/

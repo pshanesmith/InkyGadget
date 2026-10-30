@@ -36,6 +36,10 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
   does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it
   should be the one restarted. `TimeoutStopSec=90` lets a stop wait for a refresh to finish.
+- **cloud-init** is removed by `01-pi-setup.sh` (`--keep-cloud-init` opts out) only when first boot has finished and the
+  network survives without it: Imager's Wi-Fi lives in `/etc/netplan/90-NM-*.yaml`, which NetworkManager rebuilds at every boot
+  through `netplan-generator`, and apt may never remove netplan. It also deletes `/var/lib/cloud`, whose user data can hold the
+  Wi-Fi password in plain text.
 - **Setup scripts** are dry runs unless given `--apply`, back up what they change under `/var/backups/inkyframe-setup`, and never
   reboot. Boot settings (SPI, no Bluetooth/audio/camera/HDMI, `gpu_mem=16`) live only in `02-inky-setup.sh`.
 - **Config** is validated at load (`inkyframe check-config`); the installer runs it before restarting the service, so a typo
