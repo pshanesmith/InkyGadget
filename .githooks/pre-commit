@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Blocks commits that would publish something private. Enable it once per clone with:
+#   git config core.hooksPath .githooks
+# It refuses: a secrets file, a Home Assistant token (a JWT) or private key in any staged file, an absolute path
+# into someone's home folder, and a commit whose author email is not a GitHub no-reply address
+# (git config user.email ID+NAME@users.noreply.github.com). Set ALLOW_PERSONAL_EMAIL=1 to override the last one.
+set -u
+bad=0
+
+email=$(git var GIT_AUTHOR_IDENT 2>/dev/null | sed -n 's/.*<\(.*\)>.*/\1/p')
+if [[ $email != *@users.noreply.github.com && -z ${ALLOW_PERSONAL_EMAIL:-} ]]; then
+  echo "pre-commit: the commit author email is '$email', which would be published." >&2
+  echo "            use your GitHub no-reply address:  git config user.email ID+NAME@users.noreply.github.com" >&2
+  bad=1
+fi
+
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+  case "$f" in
+    *.env.example) ;;
+    secrets.env|*.env|.env|*.token)
+      echo "pre-commit: refusing to commit secrets file: $f" >&2; bad=1; continue ;;
+  esac
+  content=$(git show ":$f" 2>/dev/null | LC_ALL=C tr -d '\0') || continue
+  if grep -Eq 'eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}' <<<"$content"; then
+    echo "pre-commit: $f contains what looks like a JWT / Home Assistant access token" >&2; bad=1
+  fi
+  if grep -Eq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----' <<<"$content"; then
+    echo "pre-commit: $f contains a private key" >&2; bad=1
+  fi
+  case "$f" in .githooks/*) continue ;; esac
+  if grep -Eq '/Users/[A-Za-z0-9._-]+/' <<<"$content"; then
+    echo "pre-commit: $f contains an absolute path into a home folder (/Users/NAME/...)" >&2; bad=1
+  fi
+done
+exit $bad

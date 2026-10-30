@@ -1,0 +1,41 @@
+# Copy to /etc/inkyframe/config.toml (the installer does this). The Home Assistant token goes in
+# /etc/inkyframe/secrets.env as INKYFRAME_HA_TOKEN=..., never here.
+
+[photos]
+dir = "/srv/inkyframe/Images"        # the folder shared over SMB
+state_dir = "/var/lib/inkyframe"     # fitted copies of the photos and the rotation history
+refresh_times = ["00:00"]            # show a new photo (and the new date) at these local times
+interval_minutes = 0                 # also rotate every N minutes; 0 = only at refresh_times; at least 5
+bar_colour = "white"                 # "white" or "black" around photos that do not fill the screen
+max_pixels = 25000000                # larger photos are skipped (a HEIC streams in about 10 MB; a JPEG or PNG needs 3 to 4 bytes a pixel)
+
+[display]
+saturation = 0.5                     # 0.0 to 1.0, Pimoroni's default
+min_refresh_seconds = 300            # the panel flashes for about 30 s per refresh; this is a floor
+
+[overlay]
+enabled = true
+date_format = "%A %B %-d"            # top left, e.g. Thursday October 29 (%a %b for Thu Oct)
+units = "fahrenheit"                 # top right high/low: "fahrenheit" or "celsius"
+scale = 2                            # 1 to 4; the font is 11 px x this (2 = 22 px)
+margin = 0                           # pixels between the plates and the panel edge; 0 = right in the corners
+plate = "auto"                       # "auto" (contrasts with the photo), "light" or "dark"
+
+[location]
+# Filled in by: inkyframe geocode 10001 --config /etc/inkyframe/config.toml
+postal_code = ""
+latitude = 0.0
+longitude = 0.0
+label = ""
+
+[homeassistant]
+url = "http://homeassistant:8123"    # overridden by INKYFRAME_HA_URL
+timeout_seconds = 10
+
+# Each button calls one scene or script that you maintain in Home Assistant, or runs next_photo.
+# A is the top button. An empty string disables a button.
+[buttons]
+a = ""                               # e.g. "scene.getting_ready_for_bed"
+b = ""                               # e.g. "scene.open_bedroom_shades"
+c = ""                               # e.g. "script.reading_time" (a scene cannot toggle)
+d = "next_photo"

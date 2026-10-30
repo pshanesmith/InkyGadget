@@ -1,0 +1,51 @@
+# Installed by setup/03-install-service.sh
+[Unit]
+Description=InkyGadget photo frame
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=inkyframe
+Group=inkyframe
+SupplementaryGroups=spi gpio
+# The Home Assistant token (INKYFRAME_HA_TOKEN) comes only from this file (root-owned, mode 0600).
+EnvironmentFile=-/etc/inkyframe/secrets.env
+ExecStart=/opt/inkyframe/bin/inkyframe run --config /etc/inkyframe/config.toml
+Restart=always
+RestartSec=10
+# The program pings systemd every minute while its main loop is alive; a refresh takes about a minute.
+WatchdogSec=900
+# A stop during a panel refresh waits for it to finish (about 35 s) rather than cutting the panel's power sequence short.
+TimeoutStopSec=90
+
+# About 426 MB of RAM: the photo decoder can need 220 MB for a 24 MP photo. MemoryHigh makes this service reclaim
+# (slow down) before it squeezes the file server (smbd) and ssh; no OOM bonus, so if memory does run out this
+# service, the biggest user, is the one restarted rather than the services you need to reach the Pi.
+MemoryHigh=300M
+Nice=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+# The device files (/dev/spidev0.0, /dev/gpiochip0) are reached through the spi and gpio groups. Do not add PrivateDevices,
+# DevicePolicy or ProtectClock: each of them turns the device list into an allow-list that excludes them.
+ReadWritePaths=/var/lib/inkyframe
+# The photos are only read.
+ReadOnlyPaths=/srv/inkyframe
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      # The Pi build: the SPI/GPIO driver and the button reader only compile on Linux with this feature.
+      - run: cargo clippy --locked --all-targets --features hardware -- -D warnings
+      - name: shell syntax
+        run: for f in install.sh setup/*.sh setup/lib/*.sh tools/*.sh; do bash -n "$f"; done

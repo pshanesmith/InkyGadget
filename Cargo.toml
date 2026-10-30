@@ -1,0 +1,52 @@
+[package]
+name = "inkyframe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Bedside photo frame for a Pimoroni Inky Impression 5.7 inch e-paper display on a Raspberry Pi Zero W"
+license = "GPL-3.0-only"
+repository = "https://github.com/pshanesmith/InkyGadget"
+readme = "README.md"
+
+[lib]
+name = "inkyframe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "inkyframe"
+path = "src/main.rs"
+
+[features]
+default = []
+# The SPI/GPIO display driver and button reader. Linux only, so it is off for Mac development;
+# the Pi build (tools/cross-build.sh) turns it on.
+hardware = ["dep:spidev", "dep:gpiocdev"]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+env_logger = { version = "0.11", default-features = false }
+ab_glyph = "0.2"
+font8x8 = { version = "0.3", default-features = false, features = ["std"] }
+heic-rs = { version = "0.1.4", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+log = "0.4"
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+signal-hook = "0.3"
+toml = "0.8"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+spidev = { version = "0.7", optional = true }
+gpiocdev = { version = "0.7", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
