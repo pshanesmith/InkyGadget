@@ -1,9 +1,9 @@
 # InkyGadget
 
-A bedside photo frame: a Raspberry Pi Zero W and a Pimoroni Inky Impression 5.7" (600x448, 7-colour e-paper),
-written in Rust. Drop family photos (JPEG, PNG or iPhone HEIC) into a network folder; the frame shows one a
-day with the day and date at the top left and today's high and low at the top right. The four buttons on the
-side run Home Assistant scenes.
+A photo frame: a Raspberry Pi Zero W and a Pimoroni Inky Impression 5.7" (600x448, 7-colour e-paper),
+written in Rust. Drop your photos (JPEG, PNG or iPhone HEIC) into a network folder; the frame shows one a
+day with the day and date at the top left and today's high and low at the top right. Three of the four buttons
+on the side run Home Assistant scenes or scripts, and the fourth shows the next photo.
 
 - **Photos** arrive over an SMB share (`smb://inky.local/Images`), like the
   [inky-photo-frame](https://github.com/mehdi7129/inky-photo-frame) project. HEIC is decoded in pure Rust
@@ -12,8 +12,8 @@ side run Home Assistant scenes.
   current as the day starts), optionally every N minutes. Photos are shuffled with history, so nothing repeats
   until all have been shown. Portrait photos get white (or black) bars at the sides; nothing is cropped.
   Times and the date follow the Pi's time zone (`timedatectl`; set it with `sudo timedatectl set-timezone America/New_York`).
-- **Buttons** (A is the top one): A, B and C each call one scene or script you maintain in Home Assistant;
-  D shows the next photo. Set them in `[buttons]`.
+- **Buttons** (A is the top one): A, B and C each call one scene or script that you maintain in Home Assistant
+  (any mix of the two); D shows the next photo. Set them in `[buttons]`.
 - **Power and packages**: no Python, no desktop, no Bluetooth/audio/HDMI stack; the only extra package is Samba.
   The panel keeps its picture with no power, so the Pi is idle almost all day.
 
@@ -54,17 +54,23 @@ your Pi's hostname. New photos are picked up within a minute; delete a file to r
 
 ### Home Assistant
 
-The buttons only call things you define in Home Assistant:
+The buttons only call things you define in Home Assistant. Each of A, B and C is one `scene.*` or one `script.*`
+entity, in any mix, or empty to switch that button off. For example:
 
-| Button | Suggested | Notes |
-|---|---|---|
-| A | `scene.getting_ready_for_bed` | downstairs lights off, doors locked, bedside lights on |
-| B | `scene.open_bedroom_shades` | opening an open cover does nothing |
-| C | `script.reading_time` | a script, because a scene cannot toggle (`light.toggle` on the bedside lights) |
-| D | `next_photo` | built in |
+```toml
+[buttons]
+a = "scene.movie_night"      # a scene: puts a set of devices into saved states
+b = "script.goodnight"       # a script: runs several steps, and can use conditions and loops
+c = "script.toggle_lamp"     # toggling needs a script, because a scene only sets states
+d = "next_photo"             # built in: show the next photo
+```
 
-Create a dedicated non-admin HA user and give its long-lived token to the frame. A token carries all of its
-user's permissions.
+Use a script when a button should do something that depends on the current state (toggle, "only if it is
+closed") or should pick its targets by area, floor or label instead of listing every device.
+`inkyframe ha-discover` lists the scenes and scripts your Home Assistant has, so you can copy the ids.
+
+Create a dedicated non-admin Home Assistant user and give its long-lived token to the frame. A token carries all
+of its user's permissions.
 
 ### Operate
 

@@ -35,7 +35,7 @@ timeout_seconds = 10
 # Each button calls one scene or script that you maintain in Home Assistant, or runs next_photo.
 # A is the top button. An empty string disables a button.
 [buttons]
-a = ""                               # e.g. "scene.getting_ready_for_bed"
-b = ""                               # e.g. "scene.open_bedroom_shades"
-c = ""                               # e.g. "script.reading_time" (a scene cannot toggle)
+a = ""                               # a scene or a script, e.g. "scene.movie_night"
+b = ""                               # e.g. "script.goodnight"
+c = ""                               # e.g. "script.toggle_lamp" (toggling needs a script: a scene only sets states)
 d = "next_photo"
