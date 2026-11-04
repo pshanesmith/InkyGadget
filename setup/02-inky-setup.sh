@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prepare the Pi for the frame: SPI for the display, power-saving boot settings, the service account, the photo
-# share (Samba) and Wi-Fi power save.
+# share (Samba) and Wi-Fi (power save, automatic reconnect).
 #
 #   ./setup/02-inky-setup.sh                 dry run (default): shows everything, changes nothing
 #   sudo ./setup/02-inky-setup.sh --apply    do it (asks you to type 'yes' first)
@@ -163,10 +163,32 @@ step_samba() {
 }
 
 step_wifi() {
-  step "Wi-Fi power save"
+  step "Wi-Fi power save and reconnecting"
+  # autoconnect-retries=0: never stop retrying (the default gives up after 4 failures). A failed 4-way handshake after
+  # a roam between access points otherwise leaves wlan0 in 'failed' ("no secrets: no agents") until the next reboot.
   write_file /etc/NetworkManager/conf.d/inkyframe-wifi-powersave.conf '[connection]
-wifi.powersave = 3'
+wifi.powersave = 3
+connection.autoconnect-retries = 0'
   echo "  (the first packet after a long idle can be a little slower; remove this file to turn power save off)"
+  # Backstop: if NetworkManager still leaves wlan0 down, bring it back every 2 minutes.
+  write_file /etc/systemd/system/inkyframe-wifi-watchdog.service '[Unit]
+Description=Reconnect Wi-Fi if NetworkManager left wlan0 down
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '"'"'nmcli -t -g GENERAL.STATE device show wlan0 | grep -q "^100" || { echo "wlan0 not connected; reconnecting"; nmcli device connect wlan0; }'"'"''
+  write_file /etc/systemd/system/inkyframe-wifi-watchdog.timer '[Unit]
+Description=Check the Wi-Fi connection every 2 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target'
+  run systemctl daemon-reload
+  run systemctl enable --now inkyframe-wifi-watchdog.timer
 }
 
 step_verify() {

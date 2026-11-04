@@ -40,6 +40,10 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   network survives without it: Imager's Wi-Fi lives in `/etc/netplan/90-NM-*.yaml`, which NetworkManager rebuilds at every boot
   through `netplan-generator`, and apt may never remove netplan. It also deletes `/var/lib/cloud`, whose user data can hold the
   Wi-Fi password in plain text.
+- **Wi-Fi drops** happen a few times a day (seen Oct 31 to Nov 2): the 4-way handshake fails (`reason=15`) on every access point at
+  once (weak signal, 30-40%, plus the router side), NetworkManager gives up ("no secrets: no agents") and stays down. Pinning one
+  BSSID would not help. `02-inky-setup.sh` (wifi step) sets `autoconnect-retries = 0` and a 2-minute watchdog timer
+  (`inkyframe-wifi-watchdog`) that runs `nmcli device connect wlan0`; it recovers in 5 to 40 minutes without a reboot.
 - **Setup scripts** are dry runs unless given `--apply`, back up what they change under `/var/backups/inkyframe-setup`, and never
   reboot. Boot settings (SPI, no Bluetooth/audio/camera/HDMI, `gpu_mem=16`) live only in `02-inky-setup.sh`.
 - **Config** is validated at load (`inkyframe check-config`); the installer runs it before restarting the service, so a typo
