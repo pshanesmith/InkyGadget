@@ -136,7 +136,9 @@ paired, add other apps from the first app's own "pairing mode" option; the butto
 ### The panel buttons as Matter push buttons (optional)
 
 With `[matter] buttons = true` each of the four panel buttons also becomes a Matter **Generic Switch** (endpoints 2 to 5,
-numbered 1 to 4 from the top, named by `button_labels`). In Home Assistant each shows as an **event entity**: tap and double
+numbered 1 to 4 from the top, named by `button_labels`, which the Matter Server's device view shows). In Home Assistant each shows
+as an **event entity** named "Button (2)" (A, the top button) to "Button (5)" (D); Home Assistant reads Matter labels only for
+a few known vendors, so rename them there. Tap and double
 tap (`multi_press_1`, `multi_press_2`), `long_press` and `long_release`. Trigger automations on them, for example "button C
 long press runs the goodnight script"; the buttons keep their own actions from `[buttons]` too, unless `local_actions =
 false`. A single tap reaches Home Assistant `multi_press_ms` (300 ms) after the press, because the frame waits to see

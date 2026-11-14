@@ -562,18 +562,18 @@ fn data_model<'a>(mut rand: impl rand10::Rng + Copy, room: &Room, node: Node<'st
 
 /// Did the layout of endpoints and clusters change since the node last ran? Controllers keep a picture of it, and the
 /// node's `ConfigurationVersion` must then rise (rs-matter stores that number itself; this only remembers the layout).
-/// A first run, with nothing to compare with, is not a change.
+/// Before this file existed every node had the plain `sensor` layout, so a missing file means that.
 pub fn layout_changed(dir: &Path, signature: &str) -> bool {
     let file = dir.join("layout.json");
-    let old = std::fs::read_to_string(&file).ok();
-    if old.as_deref() == Some(signature) {
+    let old = std::fs::read_to_string(&file).unwrap_or_else(|_| "sensor".to_string());
+    if old == signature {
         return false;
     }
     let saved = std::fs::create_dir_all(dir).map_err(anyhow::Error::from).and_then(|()| write_private(&file, signature.as_bytes()));
     if let Err(e) = saved {
         log::warn!("cannot save {}: {e:#}", file.display());
     }
-    old.is_some()
+    true
 }
 
 /// Run the node until it fails. Blocks; call it on its own thread. `events` gets [`Event::Paired`] whenever the
@@ -792,7 +792,7 @@ mod tests {
     fn a_changed_layout_is_noticed_once() {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("matter");
-        assert!(!layout_changed(&dir, "sensor"), "a first run has nothing to compare with");
+        assert!(!layout_changed(&dir, "sensor"), "nodes made before the file existed had this layout");
         assert!(!layout_changed(&dir, "sensor"));
         assert!(layout_changed(&dir, "sensor+buttons"));
         assert!(!layout_changed(&dir, "sensor+buttons"));
