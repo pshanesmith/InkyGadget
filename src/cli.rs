@@ -76,7 +76,8 @@ pub fn check_config(path: &Path) -> Result<()> {
     }
     let m = &cfg.matter;
     if m.enabled {
-        println!("  matter: on{}", if m.buttons { format!(", buttons shown as push buttons (long press {} ms, double-tap wait {} ms{})", m.long_press_ms, m.multi_press_ms, if m.local_actions { "" } else { ", own actions off" }) } else { String::new() });
+        let shown: String = cfg.matter_buttons().iter().zip(['A', 'B', 'C', 'D']).filter(|(on, _)| **on).map(|(_, l)| l).collect();
+        println!("  matter: on{}", if m.buttons { format!(", buttons {shown} shown as push buttons (long press {} ms, double-tap wait {} ms)", m.long_press_ms, m.multi_press_ms) } else { String::new() });
     } else {
         println!("  matter: off");
     }
@@ -100,9 +101,9 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
     let bus = button_bus(&cfg);
     let matter_buttons = bus.as_ref().map(|b| {
         let timing = crate::switchlogic::Timing { long_press_ms: cfg.matter.long_press_ms, multi_press_ms: cfg.matter.multi_press_ms, multi_press: true, max_presses: 2 };
-        (timing, b.clone() as std::sync::Arc<dyn crate::buttons::SwitchSink>)
+        (timing, b.clone() as std::sync::Arc<dyn crate::buttons::SwitchSink>, cfg.matter_buttons())
     });
-    let hub = crate::buttons::Hub::new(actions, matter_buttons, cfg.matter.local_actions);
+    let hub = crate::buttons::Hub::new(actions, matter_buttons);
     if emulate.is_some() {
         std::thread::spawn(move || crate::buttons::watch_stdin(hub));
     } else {
@@ -352,7 +353,7 @@ fn buttons_test() -> Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     let cfg = Config::default();
     let actions = crate::buttons::Actions::new(&cfg, tx);
-    let hub = Hub::new(actions, Some((Timing::default(), std::sync::Arc::new(Print))), true);
+    let hub = Hub::new(actions, Some((Timing::default(), std::sync::Arc::new(Print), [true; 4])));
     std::thread::spawn(move || {
         if let Err(e) = crate::buttons::watch_gpio(hub) {
             eprintln!("buttons: {e:#}");

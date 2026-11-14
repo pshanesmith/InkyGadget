@@ -470,48 +470,45 @@ macro_rules! button_endpoint {
     };
 }
 
-/// The node's description: the root endpoint (Ethernet-style network commissioning stub, since the device is
-/// commissioned over the network it is already on) and the sensor endpoint.
-const NODE: Node<'static> = Node {
-    endpoints: &[
-        root_endpoint!(eth),
-        Endpoint::new(
-            ENDPOINT,
-            devices!(DEV_TYPE_AIR_QUALITY_SENSOR),
-            clusters!(
-                desc::DescHandler::CLUSTER,
-                identify::CLUSTER,
-                <AirQualityH as air_quality::ClusterHandler>::CLUSTER,
-                <Co2H as co2::ClusterHandler>::CLUSTER,
-                <TemperatureH as temperature::ClusterHandler>::CLUSTER,
-                <HumidityH as humidity::ClusterHandler>::CLUSTER
-            ),
+/// The endpoints every node has: the root, and the air quality sensor (endpoint 1).
+const BASE_ENDPOINTS: [Endpoint<'static>; 2] = [
+    root_endpoint!(eth),
+    Endpoint::new(
+        ENDPOINT,
+        devices!(DEV_TYPE_AIR_QUALITY_SENSOR),
+        clusters!(
+            desc::DescHandler::CLUSTER,
+            identify::CLUSTER,
+            <AirQualityH as air_quality::ClusterHandler>::CLUSTER,
+            <Co2H as co2::ClusterHandler>::CLUSTER,
+            <TemperatureH as temperature::ClusterHandler>::CLUSTER,
+            <HumidityH as humidity::ClusterHandler>::CLUSTER
         ),
-    ],
-};
+    ),
+];
 
-/// The same, plus the four panel buttons (endpoints 2 to 5).
-const NODE_WITH_BUTTONS: Node<'static> = Node {
-    endpoints: &[
-        root_endpoint!(eth),
-        Endpoint::new(
-            ENDPOINT,
-            devices!(DEV_TYPE_AIR_QUALITY_SENSOR),
-            clusters!(
-                desc::DescHandler::CLUSTER,
-                identify::CLUSTER,
-                <AirQualityH as air_quality::ClusterHandler>::CLUSTER,
-                <Co2H as co2::ClusterHandler>::CLUSTER,
-                <TemperatureH as temperature::ClusterHandler>::CLUSTER,
-                <HumidityH as humidity::ClusterHandler>::CLUSTER
-            ),
-        ),
-        button_endpoint!(0),
-        button_endpoint!(1),
-        button_endpoint!(2),
-        button_endpoint!(3),
-    ],
-};
+/// The panel buttons A to D as endpoints 2 to 5; the node lists only the ones that are shown (see
+/// `Config::matter_buttons`), keeping their endpoint numbers.
+const BUTTON_ENDPOINTS: [Endpoint<'static>; 4] = [button_endpoint!(0), button_endpoint!(1), button_endpoint!(2), button_endpoint!(3)];
+
+/// The endpoints for a choice of buttons. The data model wants them for `'static`, so each distinct choice is built once
+/// and kept for the life of the process (at most 16 small lists, however often the node restarts).
+fn endpoints_for(exposed: [bool; 4]) -> &'static [Endpoint<'static>] {
+    static KEPT: std::sync::Mutex<Vec<([bool; 4], &'static [Endpoint<'static>])>> = std::sync::Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, list)) = kept.iter().find(|(e, _)| *e == exposed) {
+        return list;
+    }
+    let mut list = BASE_ENDPOINTS.to_vec();
+    list.extend(BUTTON_ENDPOINTS.iter().zip(exposed).filter(|(_, on)| *on).map(|(ep, _)| ep.clone()));
+    let list: &'static [Endpoint<'static>] = Box::leak(list.into_boxed_slice());
+    kept.push((exposed, list));
+    list
+}
+
+/// The node without buttons.
+#[cfg(test)]
+const NODE: Node<'static> = Node { endpoints: &BASE_ENDPOINTS };
 
 /// What the button endpoints need: the event queue, and the names shown for them.
 struct Buttons<'a> {
@@ -582,9 +579,15 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands
     let dir = store_dir(&cfg.photos.state_dir);
     let pairing = Pairing::load_or_create(&dir)?;
     let serial = serial_number();
-    let with_buttons = cfg.matter.buttons && bus.is_some();
+    let exposed = if bus.is_some() { cfg.matter_buttons() } else { [false; 4] };
+    let with_buttons = exposed.iter().any(|&e| e);
+    let signature = if with_buttons {
+        format!("sensor+buttons:{}", exposed.iter().zip(['A', 'B', 'C', 'D']).filter(|(on, _)| **on).map(|(_, l)| l).collect::<String>())
+    } else {
+        "sensor".to_string()
+    };
     let det = device_details(&cfg.matter, &serial);
-    let layout_changed = layout_changed(&dir, if with_buttons { "sensor+buttons" } else { "sensor" });
+    let layout_changed = layout_changed(&dir, &signature);
     let room = Room { latest, max_age: crate::sensor::max_age(&cfg.sensor), thresholds: cfg.sensor.thresholds_ppm };
 
     let matter = Matter::new(&det, pairing.comm_data(), &TEST_DEV_ATT, MATTER_PORT);
@@ -605,7 +608,7 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands
         bus: bus.unwrap_or_default(),
         labels: std::array::from_fn(|i| [FixedLabelEntry { label: "name", value: names[i].as_str() }]),
     };
-    let node = if with_buttons { NODE_WITH_BUTTONS } else { NODE };
+    let node = Node { endpoints: endpoints_for(exposed) };
     let im = InteractionModel::new(&matter, &crypto, &buffers, data_model(rand, &room, node, &buttons), &kv, &state);
     futures_lite::future::block_on(im.startup()).map_err(|e| anyhow::anyhow!("data model start-up: {e:?}"))?;
     if layout_changed {
@@ -773,10 +776,9 @@ mod tests {
     #[test]
     fn the_button_endpoints_are_four_distinct_switches() {
         assert_eq!(NODE.endpoints.len(), 2);
-        assert_eq!(NODE_WITH_BUTTONS.endpoints.len(), 6);
         let mut tags = Vec::new();
-        for (i, ep) in NODE_WITH_BUTTONS.endpoints[2..].iter().enumerate() {
-            assert_eq!(ep.id, BUTTON_EP0 + i as u16);
+        for (i, ep) in BUTTON_ENDPOINTS.iter().enumerate() {
+            assert_eq!(ep.id, BUTTON_EP0 + i as u16, "a button keeps its endpoint number");
             assert!(ep.device_types.iter().any(|d| d.dtype == 0x000F), "Generic Switch");
             let ids: Vec<u32> = ep.clusters.iter().map(|c| c.id).collect();
             for needed in [0x001D, 0x0003, 0x0040, 0x003B] {
@@ -786,6 +788,15 @@ mod tests {
             tags.push((ep.semantic_tags[0].namespace_id, ep.semantic_tags[0].tag));
         }
         assert_eq!(tags, [(7, 1), (7, 2), (7, 3), (7, 4)], "Number.One to Number.Four, top to bottom");
+    }
+
+    #[test]
+    fn the_node_lists_only_the_chosen_buttons_with_stable_endpoint_numbers() {
+        let ids = |e: [bool; 4]| endpoints_for(e).iter().map(|ep| ep.id).collect::<Vec<_>>();
+        assert_eq!(ids([false; 4]), [0, 1]);
+        assert_eq!(ids([true, true, true, false]), [0, 1, 2, 3, 4]);
+        assert_eq!(ids([true, false, true, true]), [0, 1, 2, 4, 5]);
+        assert!(std::ptr::eq(endpoints_for([true; 4]), endpoints_for([true; 4])), "built once");
     }
 
     #[test]

@@ -120,9 +120,6 @@ pub struct Matter {
     pub long_press_ms: u64,
     /// A tap sequence ends when the button has been up this long: Home Assistant sees a single tap this much later.
     pub multi_press_ms: u64,
-    /// Whether a button also runs its own action (`[buttons]`) on every press. Turn it off to let Home Assistant
-    /// decide everything; `matter_pairing` always runs.
-    pub local_actions: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -165,7 +162,6 @@ impl Default for Matter {
             button_labels: Default::default(),
             long_press_ms: 500,
             multi_press_ms: 300,
-            local_actions: true,
         }
     }
 }
@@ -278,6 +274,16 @@ impl Config {
         Ok(())
     }
 
+    /// Which panel buttons (A to D) are shown to Matter controllers as push buttons: all of them except the ones that
+    /// have a built-in action here (`next_photo`, `matter_pairing`), which Home Assistant has no use for.
+    pub fn matter_buttons(&self) -> [bool; 4] {
+        if !(self.matter.enabled && self.matter.buttons) {
+            return [false; 4];
+        }
+        let b = &self.buttons;
+        [&b.a, &b.b, &b.c, &b.d].map(|t| t != "next_photo" && t != "matter_pairing")
+    }
+
     pub fn bar_rgb(&self) -> [u8; 3] {
         if self.photos.bar_colour == "black" { [0, 0, 0] } else { [255, 255, 255] }
     }
@@ -361,6 +367,20 @@ mod tests {
         assert!(c.validate().is_err());
         let c: Config = toml::from_str("[matter]\nbutton_labels = [\"Movie\", \"\", \"\", \"Next\"]").unwrap();
         assert_eq!(c.matter.button_labels[0], "Movie");
+    }
+
+    #[test]
+    fn matter_shows_the_buttons_that_have_no_built_in_action() {
+        let mut c = Config::default();
+        assert_eq!(c.matter_buttons(), [false; 4], "off by default");
+        c.matter.enabled = true;
+        c.matter.buttons = true;
+        assert_eq!(c.matter_buttons(), [true, true, true, false], "D is next_photo by default");
+        c.buttons.b = "matter_pairing".into();
+        c.buttons.d = String::new();
+        assert_eq!(c.matter_buttons(), [true, false, true, true]);
+        c.buttons.a = "scene.movie".into();
+        assert!(c.matter_buttons()[0], "a Home Assistant scene on a button does not hide it");
     }
 
     #[test]

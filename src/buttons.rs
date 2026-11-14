@@ -103,19 +103,20 @@ pub struct Hub {
     actions: Actions,
     logics: [SwitchLogic; 4],
     sink: Option<Arc<dyn SwitchSink>>,
-    /// Does the button's own action run on every press? `matter_pairing` always does.
-    local: bool,
+    /// Which buttons report to Matter (the others only run their own action).
+    exposed: [bool; 4],
     start: Instant,
 }
 
 impl Hub {
-    /// `matter` is the timing and the sink of the Matter buttons, or `None` when they are off.
-    pub fn new(actions: Actions, matter: Option<(Timing, Arc<dyn SwitchSink>)>, local: bool) -> Hub {
-        let (timing, sink) = match matter {
-            Some((t, s)) => (t, Some(s)),
-            None => (Timing::default(), None),
+    /// `matter` is the timing, the sink and the buttons that report to Matter, or `None` when none do. A button always
+    /// runs its own action (`[buttons]`) on a press.
+    pub fn new(actions: Actions, matter: Option<(Timing, Arc<dyn SwitchSink>, [bool; 4])>) -> Hub {
+        let (timing, sink, exposed) = match matter {
+            Some((t, s, e)) => (t, Some(s), e),
+            None => (Timing::default(), None, [false; 4]),
         };
-        Hub { actions, logics: std::array::from_fn(|_| SwitchLogic::new(timing)), sink, local, start: Instant::now() }
+        Hub { actions, logics: std::array::from_fn(|_| SwitchLogic::new(timing)), sink, exposed, start: Instant::now() }
     }
 
     fn now(&self) -> u64 {
@@ -131,10 +132,10 @@ impl Hub {
     pub fn edge_at(&mut self, b: Button, pressed: bool, now: u64) {
         // Close any tap sequence whose time has run out before this edge starts a new one.
         self.tick_at(now);
-        if pressed && (self.sink.is_none() || self.local || self.actions.target(b) == "matter_pairing") {
+        if pressed {
             self.actions.press(b);
         }
-        if let Some(sink) = &self.sink {
+        if let Some(sink) = self.sink.as_ref().filter(|_| self.exposed[b.index()]) {
             let logic = &mut self.logics[b.index()];
             let events = logic.edge(pressed, now);
             let down = logic.is_down();
@@ -152,7 +153,7 @@ impl Hub {
 
     pub fn tick_at(&mut self, now: u64) {
         let Some(sink) = &self.sink else { return };
-        for b in [Button::A, Button::B, Button::C, Button::D] {
+        for b in [Button::A, Button::B, Button::C, Button::D].into_iter().filter(|b| self.exposed[b.index()]) {
             let logic = &mut self.logics[b.index()];
             let events = logic.tick(now);
             let down = logic.is_down();
@@ -280,6 +281,34 @@ mod tests {
         assert_eq!(Button::from_pin(24), Some(Button::D));
         assert_eq!(Button::from_pin(7), None);
         assert_eq!(Button::from_char('C'), Some(Button::C));
+    }
+
+    /// Collects what the Matter buttons would send.
+    #[derive(Default)]
+    struct Collect(std::sync::Mutex<Vec<(Button, SwitchEvent)>>);
+
+    impl SwitchSink for Collect {
+        fn send(&self, button: Button, event: SwitchEvent, _down: bool) {
+            self.0.lock().unwrap().push((button, event));
+        }
+    }
+
+    #[test]
+    fn only_the_exposed_buttons_report_to_matter_but_every_button_keeps_its_action() {
+        let (tx, rx) = channel();
+        let sink = Arc::new(Collect::default());
+        let cfg = Config::default(); // D is next_photo
+        let mut hub = Hub::new(Actions::new(&cfg, tx), Some((Timing::default(), sink.clone(), [true, true, true, false])));
+        hub.edge_at(Button::D, true, 0);
+        hub.edge_at(Button::D, false, 80);
+        hub.tick_at(1000);
+        assert!(matches!(rx.try_recv(), Ok(Event::Next)), "next_photo still runs");
+        assert!(sink.0.lock().unwrap().is_empty(), "and D sends nothing to Matter");
+        hub.edge_at(Button::C, true, 2000);
+        hub.edge_at(Button::C, false, 2080);
+        hub.tick_at(3000);
+        let got: Vec<_> = sink.0.lock().unwrap().iter().map(|(b, e)| (*b, *e)).collect();
+        assert_eq!(got, [(Button::C, SwitchEvent::InitialPress), (Button::C, SwitchEvent::ShortRelease), (Button::C, SwitchEvent::MultiPressComplete(1))]);
     }
 
     #[test]

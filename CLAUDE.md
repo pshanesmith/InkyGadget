@@ -53,8 +53,9 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   `<state>/matter/identity.json` and cli.rs makes it before the node thread starts, so panel and node always agree. A test reads
   the QR code back out of the rendered screen (rqrr). The `matter_pairing` button action reopens the 15-minute window.
 - **Matter buttons** (`src/switchlogic.rs`, `src/buttonbus.rs`, `Hub` in `src/buttons.rs`): each panel button is a Generic Switch
-  (MS|MSR|MSL|MSM). `button_labels` go into a FixedLabel (`name`) per endpoint: the Matter Server's device view shows them, but Home Assistant
-  names the entities "Button (2)" to "(5)" by endpoint (it reads labels only for a few known vendors). The pure state machine (timestamps in, Switch events out; sequences from Core spec 1.13) runs on the
+  (MS|MSR|MSL|MSM). Only buttons without a built-in action are shown (`Config::matter_buttons`: not `next_photo`/`matter_pairing`; A to C by
+  default) and they keep endpoint numbers 2 to 5. `button_labels` go into a FixedLabel (`name`) per endpoint: the Matter Server's device view
+  shows them, but Home Assistant names the entities "Button (2)" etc. by endpoint (it reads labels only for a few known vendors). The pure state machine (timestamps in, Switch events out; sequences from Core spec 1.13) runs on the
   button thread, which watches both GPIO edges; events cross to the Matter thread through a std-only per-button queue
   (`ButtonBus`) that the Switch handler's `run()` awaits and turns into `emit_event` calls (only the handler context can emit).
   Traps already hit: `with!(required)` drops `MultiPressMax` (named explicitly, a test checks); CurrentPosition must be 1 while held;

@@ -135,16 +135,16 @@ paired, add other apps from the first app's own "pairing mode" option; the butto
 
 ### The panel buttons as Matter push buttons (optional)
 
-With `[matter] buttons = true` each of the four panel buttons also becomes a Matter **Generic Switch** (endpoints 2 to 5,
-numbered 1 to 4 from the top, named by `button_labels`, which the Matter Server's device view shows). In Home Assistant each shows
-as an **event entity** named "Button (2)" (A, the top button) to "Button (5)" (D); Home Assistant reads Matter labels only for
-a few known vendors, so rename them there. Tap and double
-tap (`multi_press_1`, `multi_press_2`), `long_press` and `long_release`. Trigger automations on them, for example "button C
-long press runs the goodnight script"; the buttons keep their own actions from `[buttons]` too, unless `local_actions =
-false`. A single tap reaches Home Assistant `multi_press_ms` (300 ms) after the press, because the frame waits to see
-whether a second tap follows. `matter_pairing` always works locally. Turning the buttons on or off changes the node's
-layout: if the frame is already paired, use Home Assistant's "Re-interview device" on it (or remove and add it again).
-`inkyframe hwtest --buttons` prints each press, hold and release as the events the buttons would send.
+With `[matter] buttons = true` the panel buttons that have no built-in action become Matter **Generic Switches**: by default A, B
+and C (button D is `next_photo` and stays inside the frame). They are endpoints 2, 3 and 4, numbered 1 to 3 from the top. In Home
+Assistant each shows as an **event entity** named "Button (2)" (A) to "Button (4)" (C); Home Assistant reads Matter labels only for a
+few known vendors, so rename them there (`button_labels` show in the Matter Server's device view). Tap and double tap
+(`multi_press_1`, `multi_press_2`), `long_press` and `long_release` are the events; trigger automations on them, for example
+"button C long press runs the goodnight script". A single tap reaches Home Assistant `multi_press_ms` (300 ms) after the press,
+because the frame waits to see whether a second tap follows. A button also runs its own `[buttons]` action on every press, so
+leave A to C empty when Home Assistant handles them. Changing which buttons are shown changes the node's layout; Home Assistant
+noticed the added endpoints without help in testing, otherwise use "Re-interview device". `inkyframe hwtest --buttons` prints each
+press, hold and release as the events the buttons would send.
 
 ### Home Assistant
 
