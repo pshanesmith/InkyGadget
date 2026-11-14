@@ -580,6 +580,14 @@ pub fn layout_changed(dir: &Path, signature: &str) -> bool {
     true
 }
 
+/// How often (seconds) an unpaired node checks that its pairing window is still open.
+const REOPEN_CHECK_SECS: u32 = 30;
+
+/// Is it time to make sure the pairing window is open? Only while no controller is paired.
+fn reopen_check_due(seconds_since_start: u32, paired: bool) -> bool {
+    !paired && seconds_since_start % REOPEN_CHECK_SECS == 0
+}
+
 /// Run the node until it fails. Blocks; call it on its own thread. `events` gets [`Event::Paired`] whenever the
 /// device gains its first controller or loses its last; `commands` are what the main loop asks of the node.
 pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands: &Receiver<MatterCommand>, bus: Option<Arc<ButtonBus>>) -> Result<()> {
@@ -633,8 +641,17 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands
     let mut paired_watch = pin!(async {
         let mut last = matter.has_fabrics();
         let _ = events.send(Event::Paired(last));
+        let mut seconds = 0u32;
         loop {
             embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+            seconds += 1;
+            if reopen_check_due(seconds, matter.has_fabrics()) {
+                // While nobody is paired the code on the panel must keep working. Opening a window that is still open fails
+                // with Busy, so trying every so often only does anything once the 15 minutes have run out.
+                if matter.open_basic_comm_window(MAX_COMM_WINDOW_TIMEOUT_SECS, &crypto, &()).is_ok() {
+                    log::info!("pairing window reopened (the earlier one had closed)");
+                }
+            }
             while let Ok(cmd) = commands.try_recv() {
                 match cmd {
                     // Only while nobody is paired: a paired controller opens windows from its own app.
@@ -664,6 +681,13 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unpaired_node_checks_its_pairing_window_every_half_minute() {
+        assert!(reopen_check_due(30, false) && reopen_check_due(60, false));
+        assert!(!reopen_check_due(31, false) && !reopen_check_due(29, false));
+        assert!(!reopen_check_due(30, true), "a paired node leaves windows to its controller");
+    }
 
     #[test]
     fn forbidden_passcodes_are_rejected() {

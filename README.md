@@ -127,10 +127,10 @@ Google Home will not take it. Home Assistant's Matter Server refuses test certif
 `enable_test_net_dcl` is on.
 
 **The panel shows the pairing screen** (QR code, manual code and short steps) while no controller is paired: when the
-service starts, and whenever the last controller is removed. The pairing window is open for 15 minutes after that. Once a
+service starts, and whenever the last controller is removed. While no controller is paired the frame keeps the pairing window open (each 15-minute window is reopened within half a minute), so the code on the panel always works. Once a
 controller has added the frame, the next refresh (within a minute) brings the photos back. The screen is not redrawn when
-the service restarts and the same code is already on the panel. To open the window again later, **hold button D for 3 seconds**:
-it reopens the window and shows the screen (a short tap still shows the next photo). Once paired, add other apps from the
+the service restarts and the same code is already on the panel. To bring the screen back later, **hold button D for 3 seconds**:
+it shows the screen (a short tap still shows the next photo). Once paired, add other apps from the
 first app's own "pairing mode" option; holding D then does nothing.
 `inkyframe matter qr --panel screen.png` draws the screen to a picture.
 

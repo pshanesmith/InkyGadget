@@ -73,7 +73,7 @@ pub fn render(code: &Code) -> Vec<u8> {
     for (i, line) in help.iter().enumerate() {
         text(&mut b, x, 220 + i * 26, line, 2, BLACK);
     }
-    centred(&mut b, 410, "Hold button D 3 s to pair again", 2, BLACK);
+    centred(&mut b, 410, "Hold button D 3 s to show this screen again", 2, BLACK);
     b
 }
 

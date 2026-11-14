@@ -51,7 +51,7 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   and the same code is not already on the panel (`state.pairing_shown`); a photo refresh follows a minute after pairing. Start-up
   waits up to 20 s for the node's first report so the first refresh is the QR code, not welcome-then-QR. The passcode lives in
   `<state>/matter/identity.json` and cli.rs makes it before the node thread starts, so panel and node always agree. A test reads
-  the QR code back out of the rendered screen (rqrr). Holding button D for 3 s reopens the 15-minute window (the hub on the button thread sends `Event::PairButton`; a tap on D shows the next photo on release).
+  the QR code back out of the rendered screen (rqrr). While unpaired the node retries opening the window every 30 s (Busy while it is still open), so the code never goes stale. Holding button D for 3 s redraws the pairing screen (the hub on the button thread sends `Event::PairButton`; a tap on D shows the next photo on release).
 - **Matter buttons** (`src/switchlogic.rs`, `src/buttonbus.rs`, `Hub` in `src/buttons.rs`): each panel button is a Generic Switch
   (MS|MSR|MSL|MSM). Buttons A to C are shown (endpoints 2 to 4; D is the frame's own). Each endpoint has a FixedLabel (`name` = "Button A" etc.): the Matter Server's device view
   shows them, but Home Assistant names the entities "Button (2)" etc. by endpoint (it reads labels only for a few known vendors). The pure state machine (timestamps in, Switch events out; sequences from Core spec 1.13) runs on the
