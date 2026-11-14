@@ -54,6 +54,8 @@ pub fn max_age(cfg: &config::Sensor) -> Duration {
 /// Matter's six air quality levels (Air Quality cluster), from CO2 alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AirQuality {
+    /// No fresh reading.
+    Unknown,
     Good,
     Fair,
     Moderate,
@@ -72,6 +74,7 @@ impl AirQuality {
 
     pub fn name(self) -> &'static str {
         match self {
+            AirQuality::Unknown => "Unknown",
             AirQuality::Good => "Good",
             AirQuality::Fair => "Fair",
             AirQuality::Moderate => "Moderate",

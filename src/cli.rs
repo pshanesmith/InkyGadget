@@ -15,6 +15,8 @@ inkyframe: bedside photo frame for the Inky Impression 5.7\"
   inkyframe check-config [--config FILE]        check that the config file loads (exit status 1 and the reason if not)
   inkyframe geocode ZIP [--config FILE]         look up a US ZIP code and store the location
   inkyframe ha-discover [--config FILE]         list Home Assistant scenes and scripts (needs INKYFRAME_HA_TOKEN)
+  inkyframe matter qr [--out FILE.png]          the Matter pairing code (QR text, manual code, QR picture)
+  inkyframe matter reset                        forget all Matter controllers and make a new pairing code (stop the service first)
   inkyframe hwtest [--white] [--buttons]        colour bars (or a white screen) on the panel, and watch the buttons
   inkyframe hwtest --sensor [--config FILE]     print the SCD40 readings for a minute (stop the service first)
   inkyframe preview PHOTO --out FILE.png        render a photo as the panel would show it
@@ -102,8 +104,10 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
         }
     });
     let sensor_cfg = cfg.sensor.clone();
+    let matter_cfg = cfg.clone();
     let mut app = App::new(cfg, panel, rx, tx.clone())?;
     crate::sensor::start(&sensor_cfg, app.air_handle(), app.stop_flag(), emulate.is_some());
+    start_matter(&matter_cfg, app.air_handle(), tx.clone());
     // On SIGTERM/SIGINT: tell long waits (clock, weather) to end, then wake the main loop.
     let stop = app.stop_flag();
     let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT])?;
@@ -117,6 +121,80 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
     log::info!("inkyframe {} running", env!("CARGO_PKG_VERSION"));
     app.run();
     Ok(())
+}
+
+/// The Matter node runs on its own thread; if it fails (no network yet, say) it is started again a minute later.
+#[cfg(feature = "matter")]
+fn start_matter(cfg: &Config, latest: crate::sensor::Latest, tx: std::sync::mpsc::Sender<crate::app::Event>) {
+    if !cfg.matter.enabled {
+        return;
+    }
+    let cfg = cfg.clone();
+    std::thread::spawn(move || loop {
+        match crate::matter::run(&cfg, latest.clone(), tx.clone()) {
+            Ok(()) => {}
+            Err(e) => log::error!("Matter node stopped: {e:#}; starting it again in a minute"),
+        }
+        std::thread::sleep(std::time::Duration::from_secs(60));
+    });
+}
+
+#[cfg(not(feature = "matter"))]
+fn start_matter(cfg: &Config, _latest: crate::sensor::Latest, _tx: std::sync::mpsc::Sender<crate::app::Event>) {
+    if cfg.matter.enabled {
+        log::error!("[matter] is enabled, but this build has no Matter support (build with --features matter)");
+    }
+}
+
+/// `inkyframe matter qr | reset`: the pairing code of this frame, or forget all controllers and make a new code.
+#[cfg(feature = "matter")]
+pub fn matter(args: &[String], config_path: &str) -> Result<()> {
+    let path = Path::new(config_path);
+    let cfg = if path.exists() { Config::load(path)? } else { Config::default() };
+    let dir = crate::matter::store_dir(&cfg.photos.state_dir);
+    match args.first().map(String::as_str) {
+        Some("qr") => {
+            let o = crate::matter::Pairing::load_or_create(&dir)?.onboarding(&cfg.matter)?;
+            println!("Manual pairing code: {}\nQR text: {}\n", o.manual_code, o.qr_text);
+            // Two rows of modules per line of text, with a 4-module white border.
+            let dark = |x: i32, y: i32| x >= 0 && y >= 0 && (x as usize) < o.width && (y as usize) < o.width && o.modules[y as usize * o.width + x as usize];
+            for y in (-4..o.width as i32 + 4).step_by(2) {
+                let line: String = (-4..o.width as i32 + 4)
+                    .map(|x| match (dark(x, y), dark(x, y + 1)) {
+                        (true, true) => '█',
+                        (true, false) => '▀',
+                        (false, true) => '▄',
+                        (false, false) => ' ',
+                    })
+                    .collect();
+                println!("{line}");
+            }
+            if let Some(out) = opt(args, "--out") {
+                let scale = 8usize;
+                let side = (o.width + 8) * scale;
+                let img = image::GrayImage::from_fn(side as u32, side as u32, |px, py| {
+                    let (x, y) = ((px as usize / scale) as i32 - 4, (py as usize / scale) as i32 - 4);
+                    image::Luma([if dark(x, y) { 0 } else { 255 }])
+                });
+                img.save(out)?;
+                println!("wrote {out}");
+            }
+            Ok(())
+        }
+        Some("reset") => {
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).with_context(|| format!("cannot remove {}", dir.display()))?;
+            }
+            println!("removed {}: all controllers are forgotten and a new pairing code is made at the next start. Remove the frame from your controller app too.", dir.display());
+            Ok(())
+        }
+        _ => bail!("usage: inkyframe matter qr [--out FILE.png] | inkyframe matter reset (stop the service first)"),
+    }
+}
+
+#[cfg(not(feature = "matter"))]
+pub fn matter(_args: &[String], _config_path: &str) -> Result<()> {
+    bail!("this build has no Matter support (build with --features matter)")
 }
 
 #[cfg(all(feature = "hardware", target_os = "linux"))]

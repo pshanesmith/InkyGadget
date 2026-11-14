@@ -38,6 +38,13 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   while `hwtest --sensor` does. I2C needs `dtparam=i2c_arm=on`, the `i2c-dev` module and the `i2c` group (all in the setup script
   and unit). Plan: expose it as a Matter Air Quality Sensor (rs-matter), pairing QR on the panel; see the plan in the session
   notes if it is still there, else the README.
+- **Matter** (`src/matter.rs`, cargo feature `matter`, on in `tools/cross-build.sh`): rs-matter 0.4.1 (pure Rust, RustCrypto). Its
+  cluster code is generated at build time from the Matter IDL, so Air Quality, CO2 / temperature / humidity measurement and
+  Identify exist and are implemented here as `ClusterHandler`s. IP-only commissioning (`DiscoveryCapabilities::IP`), Ethernet-style
+  root endpoint (the device is commissioned on the network it is already on), CSA test VID/PID 0xFFF1/0x8001 and test DAC.
+  mDNS: rs-matter's built-in responder on Linux (does it coexist with avahi-daemon on the Pi? unverified; the alternative is
+  rs-matter's `zbus` feature and its avahi backend), Bonjour on macOS (the built-in one cannot join multicast groups there).
+  The unit needs `AF_NETLINK`. Not yet verified: commissioning with a real controller, and anything on the Pi.
 - **systemd unit**: do not add `PrivateDevices`, `DevicePolicy` or `ProtectClock` (each turns the device list into an allow-list that
   excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
   does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it

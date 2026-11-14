@@ -16,5 +16,9 @@ It contains a Rust port of the command sequence, pin assignments and colour pale
 The overlay text is set in Inter Bold (assets/fonts/Inter-Bold.ttf), Copyright 2020 The Inter Project Authors,
 licensed under the SIL Open Font License 1.1 (assets/fonts/Inter-OFL.txt). https://github.com/rsms/inter
 
+The Matter node uses rs-matter (https://github.com/project-chip/rs-matter, Apache-2.0, Copyright Project CHIP Authors).
+src/matter/mdns.rs is adapted from rs-matter's examples/src/common/mdns.rs, under the same licence. The CSA test vendor ID,
+product ID and attestation certificates from rs-matter are used; they identify an uncertified development device.
+
 HEIC/HEIF decoding uses the heic-rs crate (MIT OR Apache-2.0). HEVC is covered by third-party patents; this
 project grants no patent rights. The photo-frame idea follows https://github.com/mehdi7129/inky-photo-frame (MIT).

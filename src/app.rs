@@ -27,6 +27,8 @@ pub enum Event {
     Next,
     /// A photo finished decoding (`true`) or could not be decoded (`false`).
     Processed(String, bool),
+    /// The Matter node gained its first controller (`true`) or lost its last (`false`).
+    Paired(bool),
     Stop,
 }
 
@@ -424,6 +426,9 @@ impl App {
                     } else {
                         log::info!("next photo ignored: the panel was refreshed less than {} s ago", self.cfg.display.min_refresh_seconds);
                     }
+                }
+                Ok(Event::Paired(paired)) => {
+                    log::info!("Matter: {}", if paired { "paired" } else { "not paired" });
                 }
                 Ok(Event::Processed(_, ok)) => {
                     if ok && self.state.welcome {

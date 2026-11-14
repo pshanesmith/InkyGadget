@@ -21,6 +21,8 @@ default = []
 # The SPI/GPIO display driver and button reader. Linux only, so it is off for Mac development;
 # the Pi build (tools/cross-build.sh) turns it on.
 hardware = ["dep:spidev", "dep:gpiocdev", "dep:linux-embedded-hal"]
+# A Matter air-quality sensor node (rs-matter), commissioned over the network.
+matter = ["dep:rs-matter", "dep:rand10", "dep:embassy-futures", "dep:embassy-time", "dep:embassy-time-queue-utils", "dep:async-io", "dep:futures-lite", "dep:if-addrs", "dep:socket2"]
 
 [dependencies]
 anyhow = "1"
@@ -39,6 +41,21 @@ toml = "0.8"
 # The SCD40 driver, in its own repository (not yet on crates.io).
 sensirion-scd4x = { git = "https://github.com/pshanesmith/scd4x-rust", tag = "v0.1.0" }
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+# Matter (feature "matter"), versions as in rs-matter's own examples.
+rs-matter = { version = "0.4.1", optional = true, features = ["async-io"] }
+rand10 = { package = "rand", version = "0.10", optional = true, default-features = false, features = ["std", "std_rng", "thread_rng"] }
+embassy-futures = { version = "0.1", optional = true }
+embassy-time = { version = "0.5", optional = true, features = ["std"] }
+embassy-time-queue-utils = { version = "0.3", optional = true, features = ["generic-queue-64"] }
+async-io = { version = "2", optional = true }
+futures-lite = { version = "2", optional = true }
+if-addrs = { version = "0.15", optional = true }
+socket2 = { version = "0.6", optional = true, features = ["all"] }
+
+# On a Mac, Bonjour (mDNSResponder) advertises the node: the built-in responder cannot share the multicast sockets there.
+[target.'cfg(target_os = "macos")'.dependencies]
+rs-matter = { version = "0.4.1", optional = true, features = ["async-io", "astro-dnssd"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 spidev = { version = "0.7", optional = true }
