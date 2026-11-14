@@ -50,7 +50,8 @@ label = ""
 url = "http://homeassistant:8123"    # overridden by INKYFRAME_HA_URL
 timeout_seconds = 10
 
-# Each button calls one scene or script that you maintain in Home Assistant, or runs next_photo.
+# Each button calls one scene or script that you maintain in Home Assistant, or runs a built-in action:
+# next_photo (show the next photo), or matter_pairing (open the Matter pairing window again and show the QR code).
 # A is the top button. An empty string disables a button.
 [buttons]
 a = ""                               # a scene or a script, e.g. "scene.movie_night"

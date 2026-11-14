@@ -67,6 +67,9 @@ impl Actions {
             "next_photo" => {
                 let _ = self.tx.send(Event::Next);
             }
+            "matter_pairing" => {
+                let _ = self.tx.send(Event::PairButton);
+            }
             entity => {
                 let Some(token) = self.token.clone() else {
                     log::error!("{} is not set, so {entity} cannot be called", ha::TOKEN_ENV);

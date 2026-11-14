@@ -44,7 +44,14 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   root endpoint (the device is commissioned on the network it is already on), CSA test VID/PID 0xFFF1/0x8001 and test DAC.
   mDNS: rs-matter's built-in responder on Linux (does it coexist with avahi-daemon on the Pi? unverified; the alternative is
   rs-matter's `zbus` feature and its avahi backend), Bonjour on macOS (the built-in one cannot join multicast groups there).
-  The unit needs `AF_NETLINK`. Not yet verified: commissioning with a real controller, and anything on the Pi.
+  The unit needs `AF_NETLINK`. Verified on the Pi (Zero W, real SCD40): built-in mDNS coexists with avahi-daemon, and pairing
+  with Home Assistant works once its Matter Server has `enable_test_net_dcl` on (it refuses the CSA test certificates otherwise).
+  Cluster attributes: `with!(required)` leaves out the ones a feature adds (CO2 MeasuredValue!), so name them; a test checks.
+  **Pairing screen** (`src/pairing.rs`): drawn in pure palette colours when the node reports no controller (`Event::Paired(false)`)
+  and the same code is not already on the panel (`state.pairing_shown`); a photo refresh follows a minute after pairing. Start-up
+  waits up to 20 s for the node's first report so the first refresh is the QR code, not welcome-then-QR. The passcode lives in
+  `<state>/matter/identity.json` and cli.rs makes it before the node thread starts, so panel and node always agree. A test reads
+  the QR code back out of the rendered screen (rqrr). The `matter_pairing` button action reopens the 15-minute window.
 - **systemd unit**: do not add `PrivateDevices`, `DevicePolicy` or `ProtectClock` (each turns the device list into an allow-list that
   excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
   does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it

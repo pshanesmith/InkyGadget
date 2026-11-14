@@ -64,6 +64,7 @@ gpiocdev = { version = "0.7", optional = true }
 linux-embedded-hal = { version = "0.4", default-features = false, features = ["i2c"], optional = true }
 
 [dev-dependencies]
+rqrr = "0.10.1"
 tempfile = "3"
 
 [profile.release]

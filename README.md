@@ -121,8 +121,16 @@ sudo /opt/inkyframe/bin/inkyframe matter reset    # stop the service first: forg
 ```
 
 The device uses the CSA's test vendor ID and certificates, so Apple Home asks you to confirm an uncertified accessory and
-Google Home will not take it. The pairing window is open for 15 minutes after the service starts while no controller
-is paired; the QR code on the panel is planned.
+Google Home will not take it. Home Assistant's Matter Server refuses test certificates unless its add-on option
+`enable_test_net_dcl` is on.
+
+**The panel shows the pairing screen** (QR code, manual code and short steps) while no controller is paired: when the
+service starts, and whenever the last controller is removed. The pairing window is open for 15 minutes after that. Once a
+controller has added the frame, the next refresh (within a minute) brings the photos back. The screen is not redrawn when
+the service restarts and the same code is already on the panel. To open the window again later, give a button the
+built-in action `matter_pairing` (for example `c = "matter_pairing"`): it reopens the window and shows the screen. Once
+paired, add other apps from the first app's own "pairing mode" option; the button then does nothing.
+`inkyframe matter qr --panel screen.png` draws the screen to a picture.
 
 ### Home Assistant
 
