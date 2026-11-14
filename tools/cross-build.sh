@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 TARGET=arm-unknown-linux-gnueabihf
-cargo zigbuild --release --features hardware --target "$TARGET.2.31"
+cargo zigbuild --release --features hardware,matter --target "$TARGET.2.31"
 mkdir -p dist
 cp "target/$TARGET/release/inkyframe" dist/inkyframe-armv6
 ls -l dist/inkyframe-armv6

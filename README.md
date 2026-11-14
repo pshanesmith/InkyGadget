@@ -47,6 +47,9 @@ One program (`inkyframe`, plain threads, no async runtime) runs as a single syst
   older than three samples is dropped, and a missing or silent sensor is logged once and reopened every minute. The
   settings (temperature offset, altitude or pressure, self calibration) are sent at every start and never written to the
   sensor's EEPROM. `inkyframe hwtest --sensor` prints readings (stop the service first).
+- **Matter (optional).** `src/matter.rs` runs rs-matter on one thread (`block_on`): endpoint 1 is an Air Quality Sensor served
+  from the sensor's newest reading, subscribers are told when a value moves by a visible step, and the setup passcode and
+  discriminator are made once and kept in `/var/lib/inkyframe/matter/identity.json` (mode 0600) beside rs-matter's own state.
 - **Buttons.** GPIO edge events call Home Assistant's REST API (`scene.turn_on` or `script.turn_on`) with the token
   from `secrets.env`. A call is tried again only if it never reached Home Assistant, so a toggle cannot run twice.
 
@@ -104,6 +107,22 @@ The Inky's own header passes these through; check with `i2cdetect -y 1` that 0x6
 against a thermometer. Then set `[sensor] enabled = true`, restart the service and look for "sensor ready" in the log.
 Automatic self calibration expects the sensor to see fresh air (about 400 ppm) now and then; switch it off for a room
 that is never aired.
+
+### Matter air-quality sensor (optional)
+
+With the sensor above and a build with the `matter` feature (the Pi build has it), `[matter] enabled = true` makes the
+frame a Matter **Air Quality Sensor** (CO2, air quality level, temperature, humidity) that Home Assistant, Apple Home and
+other controllers add over Wi-Fi, with no Bluetooth. Print the pairing code, then add the device in your controller
+(Home Assistant: Settings > Devices > Add device > Add Matter device; Apple Home: Add Accessory > More options):
+
+```bash
+sudo /opt/inkyframe/bin/inkyframe matter qr --config /etc/inkyframe/config.toml   # QR text, manual code, QR picture
+sudo /opt/inkyframe/bin/inkyframe matter reset    # stop the service first: forgets all controllers, new code at next start
+```
+
+The device uses the CSA's test vendor ID and certificates, so Apple Home asks you to confirm an uncertified accessory and
+Google Home will not take it. The pairing window is open for 15 minutes after the service starts while no controller
+is paired; the QR code on the panel is planned.
 
 ### Home Assistant
 

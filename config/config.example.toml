@@ -33,6 +33,12 @@ pressure_hpa = 0                     # ambient pressure; overrides altitude_m wh
 auto_calibration = true              # assumes fresh air (about 400 ppm) now and then; turn off for a room that is never aired
 thresholds_ppm = [800, 1000, 1500, 2000, 5000]   # CO2 where air quality drops from Good to Fair, Moderate, Poor, Very poor, Extremely poor
 
+# Matter: shows the frame to Home Assistant, Apple Home etc. as an Air Quality Sensor (CO2, temperature, humidity).
+# Needs [sensor] enabled and a build with the matter feature.
+[matter]
+enabled = false
+device_name = "InkyGadget"
+
 [location]
 # Filled in by: inkyframe geocode 10001 --config /etc/inkyframe/config.toml
 postal_code = ""

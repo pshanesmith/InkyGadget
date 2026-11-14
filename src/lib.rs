@@ -14,6 +14,8 @@ pub mod heic_stream;
 pub mod overlay;
 pub mod palette;
 pub mod library;
+#[cfg(feature = "matter")]
+pub mod matter;
 pub mod render;
 pub mod scale;
 pub mod sdnotify;

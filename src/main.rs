@@ -25,6 +25,7 @@ fn run() -> Result<()> {
             let cfg = if std::path::Path::new(&cfg_path).exists() { Config::load(cfg_path.as_ref())? } else { Config::default() };
             cli::ha_discover(&cfg)
         }
+        Some("matter") => cli::matter(&args[1..], &cfg_path),
         Some("hwtest") => cli::hwtest(&args[1..], &cfg_path),
         Some("--version") | Some("-V") => {
             println!("inkyframe {}", env!("CARGO_PKG_VERSION"));

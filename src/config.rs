@@ -15,6 +15,7 @@ pub struct Config {
     pub homeassistant: HomeAssistant,
     pub buttons: Buttons,
     pub sensor: Sensor,
+    pub matter: Matter,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +104,15 @@ pub struct Sensor {
     pub thresholds_ppm: [u16; 5],
 }
 
+/// The Matter node: the frame as an Air Quality Sensor for Home Assistant, Apple Home and the like. Needs `[sensor]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Matter {
+    pub enabled: bool,
+    /// The name controllers show for the device.
+    pub device_name: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Buttons {
@@ -132,6 +142,11 @@ impl Default for Display {
 impl Default for Overlay {
     fn default() -> Self {
         Overlay { enabled: true, date_format: "%A %B %-d".into(), units: "fahrenheit".into(), scale: 2, margin: 0, plate: "auto".into(), show_air: true }
+    }
+}
+impl Default for Matter {
+    fn default() -> Self {
+        Matter { enabled: false, device_name: "InkyGadget".into() }
     }
 }
 impl Default for Sensor {
@@ -211,6 +226,12 @@ impl Config {
         }
         if self.display.min_refresh_seconds < 60 {
             bail!("display.min_refresh_seconds must be at least 60");
+        }
+        if self.matter.enabled && !self.sensor.enabled {
+            bail!("[matter] needs [sensor] enabled = true: the Matter node serves the sensor's readings");
+        }
+        if self.matter.device_name.trim().is_empty() || self.matter.device_name.len() > 32 {
+            bail!("matter.device_name must be 1 to 32 characters");
         }
         let sn = &self.sensor;
         if !(0.0..=175.0).contains(&sn.temperature_offset_c) {
