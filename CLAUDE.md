@@ -21,7 +21,7 @@ See README.md (use, how it works, measurements). Sibling project with the same d
 - Pimoroni's driver quantises to a blend of the saturated and desaturated palettes (`display.saturation`, 0.5); previews use the measured colours.
 - Overlay is drawn after dithering in palette indices (crisp text). The date format is local time; the clock must be NTP-set
   (`/run/systemd/timesync/synchronized`) or the date is skipped.
-- Buttons call `scene.*`/`script.*` through the HA REST API; `next_photo` is built in. Min gap between panel refreshes: `display.min_refresh_seconds`.
+- Buttons: D = next photo (tap, on release) or the pairing code (hold 3 s); A to C go to Matter (`[matter] buttons`). The frame does not call Home Assistant (the REST scene/script buttons were removed in 0.3.0, along with the token and `secrets.env`). Min gap between panel refreshes: `display.min_refresh_seconds`.
 
 ## Decisions worth remembering
 - **The share is polled** every 30 s, not watched with inotify: one cheap directory walk, no dependency, and the "unchanged
@@ -51,7 +51,16 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   and the same code is not already on the panel (`state.pairing_shown`); a photo refresh follows a minute after pairing. Start-up
   waits up to 20 s for the node's first report so the first refresh is the QR code, not welcome-then-QR. The passcode lives in
   `<state>/matter/identity.json` and cli.rs makes it before the node thread starts, so panel and node always agree. A test reads
-  the QR code back out of the rendered screen (rqrr). The `matter_pairing` button action reopens the 15-minute window.
+  the QR code back out of the rendered screen (rqrr). Holding button D for 3 s reopens the 15-minute window (the hub on the button thread sends `Event::PairButton`; a tap on D shows the next photo on release).
+- **Matter buttons** (`src/switchlogic.rs`, `src/buttonbus.rs`, `Hub` in `src/buttons.rs`): each panel button is a Generic Switch
+  (MS|MSR|MSL|MSM). Buttons A to C are shown (endpoints 2 to 4; D is the frame's own). Each endpoint has a FixedLabel (`name` = "Button A" etc.): the Matter Server's device view
+  shows them, but Home Assistant names the entities "Button (2)" etc. by endpoint (it reads labels only for a few known vendors). The pure state machine (timestamps in, Switch events out; sequences from Core spec 1.13) runs on the
+  button thread, which watches both GPIO edges; events cross to the Matter thread through a std-only per-button queue
+  (`ButtonBus`) that the Switch handler's `run()` awaits and turns into `emit_event` calls (only the handler context can emit).
+  Traps already hit: `with!(required)` drops `MultiPressMax` (named explicitly, a test checks); CurrentPosition must be 1 while held;
+  the node's ConfigurationVersion is bumped (rs-matter keeps the number) when the layout changes (`layout.json` remembers it);
+  Home Assistant only exposes `multi_press_N`/`long_press`/`long_release` when multi-press is on, so a tap is reported after
+  `multi_press_ms`. The chain of handlers needs `#![recursion_limit = "256"]`.
 - **systemd unit**: do not add `PrivateDevices`, `DevicePolicy` or `ProtectClock` (each turns the device list into an allow-list that
   excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
   does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it

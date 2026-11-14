@@ -20,11 +20,6 @@ fn run() -> Result<()> {
         }
         Some("geocode") => cli::geocode(&args[1..], &cfg_path),
         Some("check-config") => cli::check_config(cfg_path.as_ref()),
-        // A config that exists must be valid (a missing one just means the defaults).
-        Some("ha-discover") => {
-            let cfg = if std::path::Path::new(&cfg_path).exists() { Config::load(cfg_path.as_ref())? } else { Config::default() };
-            cli::ha_discover(&cfg)
-        }
         Some("matter") => cli::matter(&args[1..], &cfg_path),
         Some("hwtest") => cli::hwtest(&args[1..], &cfg_path),
         Some("--version") | Some("-V") => {

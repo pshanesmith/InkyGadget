@@ -2,9 +2,10 @@
 
 A photo frame: a Raspberry Pi Zero W and a Pimoroni Inky Impression 5.7" (600x448, 7-colour e-paper),
 written in Rust. Drop your photos (JPEG, PNG or iPhone HEIC) into a network folder; the frame shows one a
-day with the day and date at the top left and today's high and low at the top right. Three of the four buttons
-on the side run Home Assistant scenes or scripts, and the fourth shows the next photo. An optional Sensirion SCD40
-CO2 sensor adds the room's CO2, temperature and humidity in the bottom-left corner.
+day with the day and date at the top left and today's high and low at the top right. The bottom button on the side
+shows the next photo. An optional Sensirion SCD40 CO2 sensor adds the room's CO2, temperature and humidity in the
+bottom-left corner and, over Matter, makes the frame an air quality sensor and its other three buttons push buttons
+that Home Assistant can use in automations.
 
 - **Photos** arrive over an SMB share (`smb://inky.local/Images`), like the
   [inky-photo-frame](https://github.com/mehdi7129/inky-photo-frame) project. HEIC is decoded in pure Rust
@@ -13,8 +14,8 @@ CO2 sensor adds the room's CO2, temperature and humidity in the bottom-left corn
   current as the day starts), optionally every N minutes. Photos are shuffled with history, so nothing repeats
   until all have been shown. Portrait photos get white (or black) bars at the sides; nothing is cropped.
   Times and the date follow the Pi's time zone (`timedatectl`; set it with `sudo timedatectl set-timezone America/New_York`).
-- **Buttons** (A is the top one): A, B and C each call one scene or script that you maintain in Home Assistant
-  (any mix of the two); D shows the next photo. Set them in `[buttons]`.
+- **Buttons** (A is the top one): D shows the next photo (a tap), and holding it for 3 seconds shows the Matter pairing
+  code. A, B and C are for Home Assistant: with Matter on, they report taps, double taps and long presses.
 - **Power and packages**: no Python, no desktop, no Bluetooth/audio/HDMI stack; the only extra package is Samba.
   The panel keeps its picture with no power, so the Pi is idle almost all day.
 
@@ -50,8 +51,9 @@ One program (`inkyframe`, plain threads, no async runtime) runs as a single syst
 - **Matter (optional).** `src/matter.rs` runs rs-matter on one thread (`block_on`): endpoint 1 is an Air Quality Sensor served
   from the sensor's newest reading, subscribers are told when a value moves by a visible step, and the setup passcode and
   discriminator are made once and kept in `/var/lib/inkyframe/matter/identity.json` (mode 0600) beside rs-matter's own state.
-- **Buttons.** GPIO edge events call Home Assistant's REST API (`scene.turn_on` or `script.turn_on`) with the token
-  from `secrets.env`. A call is tried again only if it never reached Home Assistant, so a toggle cannot run twice.
+- **Buttons.** GPIO edge events (both edges, so holds can be timed) feed one hub: D's tap or 3 s hold goes to the main
+  loop, and buttons A to C go to the Matter node when it is on. The frame never calls Home Assistant itself, so it needs
+  no token; Home Assistant reacts to the buttons through its own automations.
 
 ## Measured on a Pi Zero W (Raspberry Pi OS 13, 32-bit)
 
@@ -90,8 +92,7 @@ given `--apply`, backs up what it changes, and never reboots by itself.
 
 ```bash
 sudo /opt/inkyframe/bin/inkyframe geocode 10001 --config /etc/inkyframe/config.toml   # your ZIP: writes [location]
-sudo nano /etc/inkyframe/secrets.env      # INKYFRAME_HA_TOKEN=...  (a dedicated, non-admin Home Assistant user)
-sudo nano /etc/inkyframe/config.toml      # [buttons] scene/script ids, refresh_times, units...
+sudo nano /etc/inkyframe/config.toml      # refresh_times, units, [sensor], [matter]...
 sudo systemctl restart inkyframe
 ```
 
@@ -128,30 +129,27 @@ Google Home will not take it. Home Assistant's Matter Server refuses test certif
 **The panel shows the pairing screen** (QR code, manual code and short steps) while no controller is paired: when the
 service starts, and whenever the last controller is removed. The pairing window is open for 15 minutes after that. Once a
 controller has added the frame, the next refresh (within a minute) brings the photos back. The screen is not redrawn when
-the service restarts and the same code is already on the panel. To open the window again later, give a button the
-built-in action `matter_pairing` (for example `c = "matter_pairing"`): it reopens the window and shows the screen. Once
-paired, add other apps from the first app's own "pairing mode" option; the button then does nothing.
+the service restarts and the same code is already on the panel. To open the window again later, **hold button D for 3 seconds**:
+it reopens the window and shows the screen (a short tap still shows the next photo). Once paired, add other apps from the
+first app's own "pairing mode" option; holding D then does nothing.
 `inkyframe matter qr --panel screen.png` draws the screen to a picture.
 
-### Home Assistant
+### The panel buttons as Matter push buttons (optional)
 
-The buttons only call things you define in Home Assistant. Each of A, B and C is one `scene.*` or one `script.*`
-entity, in any mix, or empty to switch that button off. For example:
+With `[matter] buttons = true`, buttons A, B and C become Matter **Generic Switches** (endpoints 2, 3 and 4, numbered 1 to 3 from
+the top). Button D stays the frame's own: a tap shows the next photo, a 3 second hold shows the pairing code. In Home Assistant each
+shows as an **event entity** named "Button (2)" (A) to "Button (4)" (C); Home Assistant reads Matter labels only for a few known
+vendors, so rename them there (the Matter Server's device view shows "Button A" to "Button C"). The events are tap and double tap
+(`multi_press_1`, `multi_press_2`), `long_press` and `long_release`; trigger automations on them, for example "button C long press
+runs the goodnight script". A single tap reaches Home Assistant `multi_press_ms` (300 ms) after the press, because the frame waits to
+see whether a second tap follows. Changing which buttons are shown changes the node's layout; Home Assistant noticed the added
+endpoints without help in testing, otherwise use "Re-interview device". `inkyframe hwtest --buttons` prints each press, hold and
+release as the events the buttons would send.
 
-```toml
-[buttons]
-a = "scene.movie_night"      # a scene: puts a set of devices into saved states
-b = "script.goodnight"       # a script: runs several steps, and can use conditions and loops
-c = "script.toggle_lamp"     # toggling needs a script, because a scene only sets states
-d = "next_photo"             # built in: show the next photo
-```
-
-Use a script when a button should do something that depends on the current state (toggle, "only if it is
-closed") or should pick its targets by area, floor or label instead of listing every device.
-`inkyframe ha-discover` lists the scenes and scripts your Home Assistant has, so you can copy the ids.
-
-Create a dedicated non-admin Home Assistant user and give its long-lived token to the frame. A token carries all
-of its user's permissions.
+**Upgrading from 0.2 or earlier:** the scene and script buttons, `[homeassistant]`, `[buttons]`, `secrets.env` and
+`inkyframe ha-discover` are gone. An old config still loads (those sections are ignored, with a warning in the log). Delete
+`/etc/inkyframe/secrets.env` and revoke its long-lived token in Home Assistant, and move what the buttons did into Home
+Assistant automations on the Matter button events.
 
 ### Operate
 

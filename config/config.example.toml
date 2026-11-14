@@ -1,5 +1,4 @@
-# Copy to /etc/inkyframe/config.toml (the installer does this). The Home Assistant token goes in
-# /etc/inkyframe/secrets.env as INKYFRAME_HA_TOKEN=..., never here.
+# Copy to /etc/inkyframe/config.toml (the installer does this). No secrets are needed: the frame never logs in to Home Assistant.
 
 [photos]
 dir = "/srv/inkyframe/Images"        # the folder shared over SMB
@@ -38,6 +37,9 @@ thresholds_ppm = [800, 1000, 1500, 2000, 5000]   # CO2 where air quality drops f
 [matter]
 enabled = false
 device_name = "InkyGadget"
+buttons = false                      # show buttons A, B and C to Home Assistant as push buttons (events); D stays the frame's: tap = next photo, hold 3 s = pairing code
+long_press_ms = 500                  # holding this long is a long press
+multi_press_ms = 300                 # a tap is reported this much later (it waits to see whether a second tap follows)
 
 [location]
 # Filled in by: inkyframe geocode 10001 --config /etc/inkyframe/config.toml
@@ -45,16 +47,3 @@ postal_code = ""
 latitude = 0.0
 longitude = 0.0
 label = ""
-
-[homeassistant]
-url = "http://homeassistant:8123"    # overridden by INKYFRAME_HA_URL
-timeout_seconds = 10
-
-# Each button calls one scene or script that you maintain in Home Assistant, or runs a built-in action:
-# next_photo (show the next photo), or matter_pairing (open the Matter pairing window again and show the QR code).
-# A is the top button. An empty string disables a button.
-[buttons]
-a = ""                               # a scene or a script, e.g. "scene.movie_night"
-b = ""                               # e.g. "script.goodnight"
-c = ""                               # e.g. "script.toggle_lamp" (toggling needs a script: a scene only sets states)
-d = "next_photo"

@@ -12,9 +12,11 @@
 //! certificates, so Apple Home asks you to confirm an "uncertified accessory" and Google Home needs the IDs registered.
 
 use crate::app::Event;
+use crate::buttonbus::ButtonBus;
 use crate::config;
 use crate::pairing::{Code, MatterCommand};
 use crate::sensor::{AirQuality, Latest, Reading};
+use crate::switchlogic::SwitchEvent;
 use anyhow::{Context, Result};
 use core::pin::pin;
 use embassy_futures::select::{select, select4};
@@ -24,14 +26,17 @@ use rs_matter::dm::clusters::decl::air_quality::{self, AirQualityEnum};
 use rs_matter::dm::clusters::decl::carbon_dioxide_concentration_measurement as co2;
 use rs_matter::dm::clusters::decl::globals::{MeasurementMediumEnum, MeasurementUnitEnum};
 use rs_matter::dm::clusters::decl::relative_humidity_measurement as humidity;
+use rs_matter::dm::clusters::decl::switch::{self, InitialPress, LongPress, LongRelease, MultiPressComplete, MultiPressOngoing, ShortRelease};
+use rs_matter::dm::clusters::fixed_label::{self, FixedLabelEntry, FixedLabelHandler};
 use rs_matter::dm::clusters::decl::temperature_measurement as temperature;
 use rs_matter::dm::clusters::desc::{self, ClusterHandler as _};
 use rs_matter::dm::clusters::identify::{self, IdentifyHandler};
 use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_PID, TEST_VID};
+use rs_matter::dm::devices::DEV_TYPE_GENERIC_SWITCH;
 use rs_matter::dm::endpoints;
 use rs_matter::dm::networks::eth::EthNetwork;
 use rs_matter::dm::networks::SysNetifs;
-use rs_matter::dm::{Async, Cluster, DataModel, DeviceType, Dataver, Endpoint, HandlerContext, Node, ReadContext};
+use rs_matter::dm::{Async, Cluster, DataModel, DeviceType, Dataver, Endpoint, HandlerContext, Node, ReadContext, SemanticTag};
 use rs_matter::error::Error;
 use rs_matter::im::{EthInteractionModelState, InteractionModel};
 use rs_matter::pairing::qr::{no_optional_data, CommFlowType, NoOptionalData, Qr, QrPayload};
@@ -49,6 +54,7 @@ use serde::{Deserialize, Serialize};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 mod mdns;
@@ -57,6 +63,10 @@ mod mdns;
 const ENDPOINT: u16 = 1;
 /// Air Quality Sensor, device type revision 1.
 const DEV_TYPE_AIR_QUALITY_SENSOR: DeviceType = DeviceType { dtype: 0x002C, drev: 1 };
+/// The panel buttons A to D are endpoints 2 to 5 (Generic Switch), when `[matter] buttons` is on.
+const BUTTON_EP0: u16 = 2;
+/// The Switch cluster.
+const SWITCH_CLUSTER: u32 = 0x003B;
 /// How often an attribute is looked at for a change worth telling subscribers about.
 const WATCH: Duration = Duration::from_secs(5);
 
@@ -373,39 +383,171 @@ impl humidity::ClusterHandler for HumidityH {
     }
 }
 
-/// The node's description: the root endpoint (Ethernet-style network commissioning stub, since the device is
-/// commissioned over the network it is already on) and the sensor endpoint.
-const NODE: Node<'static> = Node {
-    endpoints: &[
-        root_endpoint!(eth),
-        Endpoint::new(
-            ENDPOINT,
-            devices!(DEV_TYPE_AIR_QUALITY_SENSOR),
-            clusters!(
-                desc::DescHandler::CLUSTER,
-                identify::CLUSTER,
-                <AirQualityH as air_quality::ClusterHandler>::CLUSTER,
-                <Co2H as co2::ClusterHandler>::CLUSTER,
-                <TemperatureH as temperature::ClusterHandler>::CLUSTER,
-                <HumidityH as humidity::ClusterHandler>::CLUSTER
-            ),
-        ),
-    ],
-};
+/// One panel button as a Matter push button (Generic Switch with the momentary, release, long-press and multi-press
+/// features). The button thread pushes events into the [`ButtonBus`]; this handler turns them into Switch events.
+struct SwitchH {
+    dataver: Dataver,
+    /// 0 for button A to 3 for D.
+    idx: usize,
+    bus: Arc<ButtonBus>,
+}
 
-fn data_model<'a>(
-    mut rand: impl rand10::Rng + Copy,
-    room: &Room,
-) -> impl DataModel + 'a {
+impl switch::ClusterHandler for SwitchH {
+    // MultiPressMax is optional, so `required` alone would leave it out, and Home Assistant needs it to build its
+    // double-press events (the same trap as the CO2 cluster).
+    const CLUSTER: Cluster<'static> = switch::FULL_CLUSTER
+        .with_features(
+            switch::Feature::MOMENTARY_SWITCH.bits()
+                | switch::Feature::MOMENTARY_SWITCH_RELEASE.bits()
+                | switch::Feature::MOMENTARY_SWITCH_LONG_PRESS.bits()
+                | switch::Feature::MOMENTARY_SWITCH_MULTI_PRESS.bits(),
+        )
+        .with_attrs(with!(required; switch::AttributeId::MultiPressMax));
+
+    fn dataver(&self) -> u32 {
+        self.dataver.get()
+    }
+
+    fn dataver_changed(&self) {
+        self.dataver.changed();
+    }
+
+    /// Up (0) and held down (1).
+    fn number_of_positions(&self, _ctx: impl ReadContext) -> Result<u8, Error> {
+        Ok(2)
+    }
+
+    fn current_position(&self, _ctx: impl ReadContext) -> Result<u8, Error> {
+        Ok(u8::from(self.bus.is_down(self.idx)))
+    }
+
+    /// Taps counted in one sequence: a single tap or a double tap.
+    fn multi_press_max(&self, _ctx: impl ReadContext) -> Result<u8, Error> {
+        Ok(2)
+    }
+
+    async fn run(&self, ctx: impl HandlerContext) -> Result<(), Error> {
+        let endpoint = BUTTON_EP0 + self.idx as u16;
+        let mut held = self.bus.is_down(self.idx);
+        loop {
+            let event = self.bus.recv(self.idx).await;
+            // Events go out at once; a full event queue loses this one, not the node.
+            let sent = match event {
+                SwitchEvent::InitialPress => InitialPress::emit_for(&ctx, endpoint, |b| b.new_position(1)?.end()).map(drop),
+                SwitchEvent::ShortRelease => ShortRelease::emit_for(&ctx, endpoint, |b| b.previous_position(1)?.end()).map(drop),
+                SwitchEvent::LongPress => LongPress::emit_for(&ctx, endpoint, |b| b.new_position(1)?.end()).map(drop),
+                SwitchEvent::LongRelease => LongRelease::emit_for(&ctx, endpoint, |b| b.previous_position(1)?.end()).map(drop),
+                SwitchEvent::MultiPressOngoing(n) => MultiPressOngoing::emit_for(&ctx, endpoint, |b| b.new_position(1)?.current_number_of_presses_counted(n)?.end()).map(drop),
+                SwitchEvent::MultiPressComplete(n) => MultiPressComplete::emit_for(&ctx, endpoint, |b| b.previous_position(1)?.total_number_of_presses_counted(n)?.end()).map(drop),
+            };
+            if let Err(e) = sent {
+                log::warn!("button {} event {event:?} not sent: {e:?}", self.idx);
+            }
+            let down = self.bus.is_down(self.idx);
+            if down != held {
+                held = down;
+                ctx.notify_attr_changed(endpoint, SWITCH_CLUSTER, switch::AttributeId::CurrentPosition as u32);
+            }
+        }
+    }
+}
+
+/// One panel button's endpoint: Generic Switch with Identify, a name, and the Number tag the spec asks for when a node
+/// has several switches (position 1 to 4, top to bottom).
+macro_rules! button_endpoint {
+    ($i:literal) => {
+        Endpoint::new(
+            BUTTON_EP0 + $i,
+            devices!(DEV_TYPE_GENERIC_SWITCH),
+            clusters!(
+                desc::CLUSTER_TAG_LIST,
+                identify::CLUSTER,
+                fixed_label::CLUSTER,
+                <SwitchH as switch::ClusterHandler>::CLUSTER
+            ),
+        )
+        .with_tags(&[SemanticTag::new(0x07, $i + 1)])
+    };
+}
+
+/// The endpoints every node has: the root, and the air quality sensor (endpoint 1).
+const BASE_ENDPOINTS: [Endpoint<'static>; 2] = [
+    root_endpoint!(eth),
+    Endpoint::new(
+        ENDPOINT,
+        devices!(DEV_TYPE_AIR_QUALITY_SENSOR),
+        clusters!(
+            desc::DescHandler::CLUSTER,
+            identify::CLUSTER,
+            <AirQualityH as air_quality::ClusterHandler>::CLUSTER,
+            <Co2H as co2::ClusterHandler>::CLUSTER,
+            <TemperatureH as temperature::ClusterHandler>::CLUSTER,
+            <HumidityH as humidity::ClusterHandler>::CLUSTER
+        ),
+    ),
+];
+
+/// The panel buttons A to D as endpoints 2 to 5; the node lists only the ones that are shown (see
+/// `Config::matter_buttons`), keeping their endpoint numbers.
+const BUTTON_ENDPOINTS: [Endpoint<'static>; 4] = [button_endpoint!(0), button_endpoint!(1), button_endpoint!(2), button_endpoint!(3)];
+
+/// The endpoints for a choice of buttons. The data model wants them for `'static`, so each distinct choice is built once
+/// and kept for the life of the process (at most 16 small lists, however often the node restarts).
+fn endpoints_for(exposed: [bool; 4]) -> &'static [Endpoint<'static>] {
+    static KEPT: std::sync::Mutex<Vec<([bool; 4], &'static [Endpoint<'static>])>> = std::sync::Mutex::new(Vec::new());
+    let mut kept = KEPT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, list)) = kept.iter().find(|(e, _)| *e == exposed) {
+        return list;
+    }
+    let mut list = BASE_ENDPOINTS.to_vec();
+    list.extend(BUTTON_ENDPOINTS.iter().zip(exposed).filter(|(_, on)| *on).map(|(ep, _)| ep.clone()));
+    let list: &'static [Endpoint<'static>] = Box::leak(list.into_boxed_slice());
+    kept.push((exposed, list));
+    list
+}
+
+/// The node without buttons.
+#[cfg(test)]
+const NODE: Node<'static> = Node { endpoints: &BASE_ENDPOINTS };
+
+/// What the button endpoints need: the event queue.
+struct Buttons {
+    bus: Arc<ButtonBus>,
+}
+
+/// The names the Matter Server's device view shows for the buttons. (Home Assistant itself names the entities by endpoint.)
+static BUTTON_LABELS: [[FixedLabelEntry<'static>; 1]; 4] = [
+    [FixedLabelEntry { label: "name", value: "Button A" }],
+    [FixedLabelEntry { label: "name", value: "Button B" }],
+    [FixedLabelEntry { label: "name", value: "Button C" }],
+    [FixedLabelEntry { label: "name", value: "Button D" }],
+];
+
+/// The handlers of one button's endpoint (a macro, because each `chain` is a new type).
+macro_rules! with_button {
+    ($handlers:expr, $i:literal, $rand:ident, $buttons:ident) => {
+        $handlers
+            .chain(|e, c| e == BUTTON_EP0 + $i && c == desc::DescHandler::CLUSTER.id, Async(desc::DescHandler::new(Dataver::new_rand(&mut $rand)).adapt()))
+            .chain(|e, c| e == BUTTON_EP0 + $i && c == identify::CLUSTER.id, Async(IdentifyHandler::new(Dataver::new_rand(&mut $rand)).adapt()))
+            .chain(
+                |e, c| e == BUTTON_EP0 + $i && c == fixed_label::CLUSTER.id,
+                Async(FixedLabelHandler::new(Dataver::new_rand(&mut $rand), &BUTTON_LABELS[$i]).adapt()),
+            )
+            .chain(
+                |e, c| e == BUTTON_EP0 + $i && c == SWITCH_CLUSTER,
+                Async(switch::HandlerAdaptor(SwitchH { dataver: Dataver::new_rand(&mut $rand), idx: $i, bus: $buttons.bus.clone() })),
+            )
+    };
+}
+
+fn data_model<'a>(mut rand: impl rand10::Rng + Copy, room: &Room, node: Node<'static>, buttons: &'a Buttons) -> impl DataModel + 'a {
     let (aq, c, t, h) = (
         AirQualityH { dataver: Dataver::new_rand(&mut rand), room: room.clone() },
         Co2H { dataver: Dataver::new_rand(&mut rand), room: room.clone() },
         TemperatureH { dataver: Dataver::new_rand(&mut rand), room: room.clone() },
         HumidityH { dataver: Dataver::new_rand(&mut rand), room: room.clone() },
     );
-    (
-        NODE,
-        endpoints::EthSysHandlerBuilder::new()
+    let handlers = endpoints::EthSysHandlerBuilder::new()
             .netif_diag(&SysNetifs)
             .build(rand)
             .chain(|e, c| e == ENDPOINT && c == desc::DescHandler::CLUSTER.id, Async(desc::DescHandler::new(Dataver::new_rand(&mut rand)).adapt()))
@@ -413,17 +555,46 @@ fn data_model<'a>(
             .chain(|e, c| e == ENDPOINT && c == <AirQualityH as air_quality::ClusterHandler>::CLUSTER.id, Async(air_quality::HandlerAdaptor(aq)))
             .chain(|e, c| e == ENDPOINT && c == <Co2H as co2::ClusterHandler>::CLUSTER.id, Async(co2::HandlerAdaptor(c)))
             .chain(|e, c| e == ENDPOINT && c == <TemperatureH as temperature::ClusterHandler>::CLUSTER.id, Async(temperature::HandlerAdaptor(t)))
-            .chain(|e, c| e == ENDPOINT && c == <HumidityH as humidity::ClusterHandler>::CLUSTER.id, Async(humidity::HandlerAdaptor(h))),
-    )
+            .chain(|e, c| e == ENDPOINT && c == <HumidityH as humidity::ClusterHandler>::CLUSTER.id, Async(humidity::HandlerAdaptor(h)));
+    // The button endpoints' handlers are always there; they are only reached when `node` lists those endpoints.
+    let handlers = with_button!(handlers, 0, rand, buttons);
+    let handlers = with_button!(handlers, 1, rand, buttons);
+    let handlers = with_button!(handlers, 2, rand, buttons);
+    let handlers = with_button!(handlers, 3, rand, buttons);
+    (node, handlers)
+}
+
+/// Did the layout of endpoints and clusters change since the node last ran? Controllers keep a picture of it, and the
+/// node's `ConfigurationVersion` must then rise (rs-matter stores that number itself; this only remembers the layout).
+/// Before this file existed every node had the plain `sensor` layout, so a missing file means that.
+pub fn layout_changed(dir: &Path, signature: &str) -> bool {
+    let file = dir.join("layout.json");
+    let old = std::fs::read_to_string(&file).unwrap_or_else(|_| "sensor".to_string());
+    if old == signature {
+        return false;
+    }
+    let saved = std::fs::create_dir_all(dir).map_err(anyhow::Error::from).and_then(|()| write_private(&file, signature.as_bytes()));
+    if let Err(e) = saved {
+        log::warn!("cannot save {}: {e:#}", file.display());
+    }
+    true
 }
 
 /// Run the node until it fails. Blocks; call it on its own thread. `events` gets [`Event::Paired`] whenever the
 /// device gains its first controller or loses its last; `commands` are what the main loop asks of the node.
-pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands: &Receiver<MatterCommand>) -> Result<()> {
+pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands: &Receiver<MatterCommand>, bus: Option<Arc<ButtonBus>>) -> Result<()> {
     let dir = store_dir(&cfg.photos.state_dir);
     let pairing = Pairing::load_or_create(&dir)?;
     let serial = serial_number();
+    let exposed = if bus.is_some() { cfg.matter_buttons() } else { [false; 4] };
+    let with_buttons = exposed.iter().any(|&e| e);
+    let signature = if with_buttons {
+        format!("sensor+buttons:{}", exposed.iter().zip(['A', 'B', 'C', 'D']).filter(|(on, _)| **on).map(|(_, l)| l).collect::<String>())
+    } else {
+        "sensor".to_string()
+    };
     let det = device_details(&cfg.matter, &serial);
+    let layout_changed = layout_changed(&dir, &signature);
     let room = Room { latest, max_age: crate::sensor::max_age(&cfg.sensor), thresholds: cfg.sensor.thresholds_ppm };
 
     let matter = Matter::new(&det, pairing.comm_data(), &TEST_DEV_ATT, MATTER_PORT);
@@ -436,8 +607,15 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands
     let crypto = default_crypto(rand10::rng(), DAC_PRIVKEY);
     let rand = crypto.rand().map_err(|e| anyhow::anyhow!("random numbers: {e:?}"))?;
 
-    let im = InteractionModel::new(&matter, &crypto, &buffers, data_model(rand, &room), &kv, &state);
+    let buttons = Buttons { bus: bus.unwrap_or_default() };
+    let node = Node { endpoints: endpoints_for(exposed) };
+    let im = InteractionModel::new(&matter, &crypto, &buffers, data_model(rand, &room, node, &buttons), &kv, &state);
     futures_lite::future::block_on(im.startup()).map_err(|e| anyhow::anyhow!("data model start-up: {e:?}"))?;
+    if layout_changed {
+        // The endpoints changed (the buttons were switched on or off): tell controllers to look at the node again.
+        let version = im.bump_configuration_version().map_err(|e| anyhow::anyhow!("configuration version: {e:?}"))?;
+        log::info!("the node's layout changed; configuration version is now {version}");
+    }
 
     let responder = DefaultResponder::new(&im);
     let mut respond = pin!(responder.run::<4, 4>());
@@ -586,6 +764,50 @@ mod tests {
         assert!(has(&<TemperatureH as temperature::ClusterHandler>::CLUSTER, &[0x0, 0x1, 0x2]));
         assert!(has(&<HumidityH as humidity::ClusterHandler>::CLUSTER, &[0x0, 0x1, 0x2]));
         assert!(has(&<AirQualityH as air_quality::ClusterHandler>::CLUSTER, &[0x0]));
+    }
+
+    #[test]
+    fn the_switch_cluster_serves_what_home_assistant_needs() {
+        // NumberOfPositions, CurrentPosition and MultiPressMax (optional: `required` alone drops it).
+        let c = <SwitchH as switch::ClusterHandler>::CLUSTER;
+        assert!([0x0, 0x1, 0x2].iter().all(|i| served(&c).contains(i)), "{:?}", served(&c));
+    }
+
+    #[test]
+    fn the_button_endpoints_are_four_distinct_switches() {
+        assert_eq!(NODE.endpoints.len(), 2);
+        let mut tags = Vec::new();
+        for (i, ep) in BUTTON_ENDPOINTS.iter().enumerate() {
+            assert_eq!(ep.id, BUTTON_EP0 + i as u16, "a button keeps its endpoint number");
+            assert!(ep.device_types.iter().any(|d| d.dtype == 0x000F), "Generic Switch");
+            let ids: Vec<u32> = ep.clusters.iter().map(|c| c.id).collect();
+            for needed in [0x001D, 0x0003, 0x0040, 0x003B] {
+                assert!(ids.contains(&needed), "endpoint {} lacks cluster {needed:#x}", ep.id);
+            }
+            assert_eq!(ep.semantic_tags.len(), 1, "a TagList is required when device types repeat");
+            tags.push((ep.semantic_tags[0].namespace_id, ep.semantic_tags[0].tag));
+        }
+        assert_eq!(tags, [(7, 1), (7, 2), (7, 3), (7, 4)], "Number.One to Number.Four, top to bottom");
+    }
+
+    #[test]
+    fn the_node_lists_only_the_chosen_buttons_with_stable_endpoint_numbers() {
+        let ids = |e: [bool; 4]| endpoints_for(e).iter().map(|ep| ep.id).collect::<Vec<_>>();
+        assert_eq!(ids([false; 4]), [0, 1]);
+        assert_eq!(ids([true, true, true, false]), [0, 1, 2, 3, 4]);
+        assert_eq!(ids([true, false, true, true]), [0, 1, 2, 4, 5]);
+        assert!(std::ptr::eq(endpoints_for([true; 4]), endpoints_for([true; 4])), "built once");
+    }
+
+    #[test]
+    fn a_changed_layout_is_noticed_once() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("matter");
+        assert!(!layout_changed(&dir, "sensor"), "nodes made before the file existed had this layout");
+        assert!(!layout_changed(&dir, "sensor"));
+        assert!(layout_changed(&dir, "sensor+buttons"));
+        assert!(!layout_changed(&dir, "sensor+buttons"));
+        assert!(layout_changed(&dir, "sensor"), "switching back is a change too");
     }
 
     #[test]

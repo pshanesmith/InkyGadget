@@ -8,7 +8,7 @@
 #          --uninstall    stop and remove the service (keeps /opt/inkyframe, /etc/inkyframe, photos and state)
 #          --yes          skip confirmation prompts
 # Layout:  /opt/inkyframe     bin/, setup/, systemd/, config/, tools/, VERSION  (root-owned)
-#          /etc/inkyframe     config.toml, secrets.env (0600), share-password
+#          /etc/inkyframe     config.toml, share-password
 #          /var/lib/inkyframe state.json and the fitted copies of the photos (cache/)
 #          /srv/inkyframe/Images   the shared photo folder
 set -euo pipefail
@@ -79,11 +79,9 @@ main() {
   else
     echo "  keeping existing $ETC/config.toml"
   fi
-  if [[ ! -f $ETC/secrets.env ]]; then
-    run install -m 600 -o root -g root "$DEPLOY/config/secrets.env.example" "$ETC/secrets.env"
-    warn "put INKYFRAME_HA_TOKEN in $ETC/secrets.env or the buttons cannot call Home Assistant"
-  else
-    echo "  keeping existing $ETC/secrets.env"
+  # Older releases kept a Home Assistant token here for the scene and script buttons, which no longer exist.
+  if [[ -f $ETC/secrets.env ]]; then
+    warn "$ETC/secrets.env is no longer used (it held a Home Assistant token): delete it, and revoke the token in Home Assistant"
   fi
   run install -d -m 755 -o inkyframe -g inkyframe "$STATE"
   run install -d -m 2775 -o inkyframe -g inkyframe "$SHARE"
