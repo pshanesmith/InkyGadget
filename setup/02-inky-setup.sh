@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare the Pi for the frame: SPI for the display, power-saving boot settings, the service account, the photo
+# Prepare the Pi for the frame: SPI for the display, I2C for the optional CO2 sensor, power-saving boot settings, the service account, the photo
 # share (Samba) and Wi-Fi power save.
 #
 #   ./setup/02-inky-setup.sh                 dry run (default): shows everything, changes nothing
@@ -44,6 +44,7 @@ want() { [[ -z $ONLY || ,$ONLY, == *,$1,* ]] && [[ ,$SKIP, != *,$1,* ]]; }
 # SPI on, and no chip-select pin claimed by the kernel (the display driver drives GPIO8 itself). The rest cuts
 # power: no Bluetooth, no audio, no camera or HDMI/KMS stack on a headless board.
 BOOT_BLOCK='dtparam=spi=on
+dtparam=i2c_arm=on
 dtoverlay=spi0-0cs
 dtoverlay=disable-bt
 dtparam=audio=off
@@ -51,12 +52,14 @@ camera_auto_detect=0
 display_auto_detect=0
 gpu_mem=16
 disable_splash=1'
-BOOT_CONFLICTS='dtparam=spi=|dtoverlay=spi0-|dtparam=audio=|camera_auto_detect=|display_auto_detect=|dtoverlay=vc4-kms-v3d|dtoverlay=vc4-fkms-v3d|max_framebuffers=|gpu_mem=|dtoverlay=disable-bt|disable_fw_kms_setup=|disable_splash='
+BOOT_CONFLICTS='dtparam=spi=|dtparam=i2c_arm=|dtoverlay=spi0-|dtparam=audio=|camera_auto_detect=|display_auto_detect=|dtoverlay=vc4-kms-v3d|dtoverlay=vc4-fkms-v3d|max_framebuffers=|gpu_mem=|dtoverlay=disable-bt|disable_fw_kms_setup=|disable_splash='
 
 step_boot() {
-  step "Boot configuration (SPI on; Bluetooth, audio, camera and HDMI overlay off)"
+  step "Boot configuration (SPI and I2C on; Bluetooth, audio, camera and HDMI overlay off)"
   [[ -f $BOOT_DIR/config.txt ]] || die "$BOOT_DIR/config.txt not found"
   config_txt_update "$BOOT_DIR/config.txt" inky "$BOOT_BLOCK" "$BOOT_CONFLICTS"
+  # The I2C bus (for the SCD40 sensor) appears as /dev/i2c-1 once this kernel module is loaded at boot.
+  write_file /etc/modules-load.d/inkyframe-i2c.conf "i2c-dev"
   info "takes effect after a reboot"
 }
 
@@ -68,8 +71,10 @@ step_account() {
     run useradd --system --home-dir "$STATE" --no-create-home --shell /usr/sbin/nologin "$SVC_USER"
   fi
   local g
-  for g in spi gpio; do
-    if getent group "$g" >/dev/null; then run usermod -aG "$g" "$SVC_USER"; else warn "group $g does not exist"; fi
+  # i2c is for the CO2 sensor; the unit names it, so it must exist (Raspberry Pi OS has it; create it elsewhere).
+  getent group i2c >/dev/null || run groupadd --system i2c
+  for g in spi gpio i2c; do
+    if getent group "$g" >/dev/null || (( DRY_RUN )); then run usermod -aG "$g" "$SVC_USER"; else warn "group $g does not exist"; fi
   done
   run install -d -m 755 -o root -g root "$ETC"
   run install -d -m 755 -o "$SVC_USER" -g "$SVC_USER" "$STATE"
@@ -172,6 +177,7 @@ wifi.powersave = 3'
 step_verify() {
   step "Verification"
   echo "  SPI device: $(ls /dev/spidev0.0 2>/dev/null || echo 'not yet (reboot after the boot step)')"
+  echo "  I2C device: $(ls /dev/i2c-1 2>/dev/null || echo 'not yet (reboot after the boot step)')"
   echo "  user: $(id "$SVC_USER" 2>&1 | head -1)"
   echo "  share dir: $(ls -ld "$SHARE_DIR" 2>&1 | head -1)"
   echo "  installed packages: $(dpkg -l | grep -c '^ii')"

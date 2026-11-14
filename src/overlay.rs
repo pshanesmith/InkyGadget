@@ -15,6 +15,8 @@ pub const DISPLAY_H: usize = 448;
 pub struct Overlay {
     pub left: Option<String>,
     pub right: Option<String>,
+    /// Bottom-left plate (the room's air).
+    pub bottom: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,11 +145,11 @@ fn inside(px: f32, py: f32, w: f32, h: f32, r: [f32; 4], inset: f32) -> bool {
     true
 }
 
-fn plate(buf: &mut [u8], pal: &Palette, text: &str, right_aligned: bool, st: &OverlayStyle) {
+fn plate(buf: &mut [u8], pal: &Palette, text: &str, right_aligned: bool, at_bottom: bool, st: &OverlayStyle) {
     let run = layout(text, st.scale);
     let (w, h) = plate_size(text, st.scale);
     let x = if right_aligned { DISPLAY_W.saturating_sub(st.margin + w) } else { st.margin };
-    let y = st.margin;
+    let y = if at_bottom { DISPLAY_H.saturating_sub(st.margin + h) } else { st.margin };
     let (fill, ink) = plate_colours(buf, pal, x, y, w, h, st.plate);
     // A corner on the edge of the panel stays square; the others are rounded.
     let round = |cx: usize, cy: usize| if cx == 0 || cx >= DISPLAY_W || cy == 0 || cy >= DISPLAY_H { 0.0 } else { CORNER_RADIUS };
@@ -169,10 +171,13 @@ fn plate(buf: &mut [u8], pal: &Palette, text: &str, right_aligned: bool, st: &Ov
 pub fn draw(buf: &mut [u8], pal: &Palette, overlay: &Overlay, st: &OverlayStyle) {
     assert_eq!(buf.len(), DISPLAY_W * DISPLAY_H);
     if let Some(t) = &overlay.left {
-        plate(buf, pal, t, false, st);
+        plate(buf, pal, t, false, false, st);
     }
     if let Some(t) = &overlay.right {
-        plate(buf, pal, t, true, st);
+        plate(buf, pal, t, true, false, st);
+    }
+    if let Some(t) = &overlay.bottom {
+        plate(buf, pal, t, false, true, st);
     }
 }
 
@@ -185,7 +190,7 @@ mod tests {
     fn plates_land_in_their_corners_and_leave_the_rest_alone() {
         let pal = blend(0.5);
         let mut buf = vec![WHITE; DISPLAY_W * DISPLAY_H];
-        let o = Overlay { left: Some("Thu Oct 29".into()), right: Some("H 62° L 41°".into()) };
+        let o = Overlay { left: Some("Thu Oct 29".into()), right: Some("H 62° L 41°".into()), ..Default::default() };
         draw(&mut buf, &pal, &o, &OverlayStyle { plate: PlateStyle::Light, ..Default::default() });
         assert_eq!(buf[0], BLACK, "left plate outline starts in the top-left corner");
         assert_eq!(buf[DISPLAY_W - 1], BLACK, "right plate ends in the top-right corner");
@@ -203,10 +208,10 @@ mod tests {
     fn auto_plate_is_dark_on_a_bright_picture_and_light_on_a_dark_one() {
         let pal = blend(0.5);
         let mut bright = vec![WHITE; DISPLAY_W * DISPLAY_H];
-        draw(&mut bright, &pal, &Overlay { left: Some("Mon".into()), right: None }, &OverlayStyle::default());
+        draw(&mut bright, &pal, &Overlay { left: Some("Mon".into()), ..Default::default() }, &OverlayStyle::default());
         assert_eq!(bright[3 * DISPLAY_W + 4], BLACK);
         let mut dark = vec![BLACK; DISPLAY_W * DISPLAY_H];
-        draw(&mut dark, &pal, &Overlay { left: Some("Mon".into()), right: None }, &OverlayStyle::default());
+        draw(&mut dark, &pal, &Overlay { left: Some("Mon".into()), ..Default::default() }, &OverlayStyle::default());
         assert_eq!(dark[3 * DISPLAY_W + 4], WHITE);
     }
 
@@ -215,7 +220,7 @@ mod tests {
         let pal = blend(0.5);
         const BG: u8 = 200; // not a plate colour, so "untouched" is visible
         let mut buf = vec![BG; DISPLAY_W * DISPLAY_H];
-        let o = Overlay { left: Some("Friday October 30".into()), right: None };
+        let o = Overlay { left: Some("Friday October 30".into()), ..Default::default() };
         draw(&mut buf, &pal, &o, &OverlayStyle { plate: PlateStyle::Dark, ..Default::default() });
         let (w, h) = plate_size("Friday October 30", 2);
         assert_eq!(buf[(h - 1) * DISPLAY_W], WHITE, "bottom-left sits on the panel edge and stays square");
@@ -228,6 +233,19 @@ mod tests {
         let (a, _) = plate_size("Wednesday September 30", 2);
         let (b, _) = plate_size("H 100° L -100°", 2);
         assert!(a + b <= DISPLAY_W, "{a} + {b}");
+    }
+
+    #[test]
+    fn the_air_plate_sits_in_the_bottom_left_corner() {
+        let pal = blend(0.5);
+        let mut buf = vec![WHITE; DISPLAY_W * DISPLAY_H];
+        let o = Overlay { bottom: Some("CO2 612 ppm  72°  41%".into()), ..Default::default() };
+        draw(&mut buf, &pal, &o, &OverlayStyle { plate: PlateStyle::Light, ..Default::default() });
+        assert_eq!(buf[(DISPLAY_H - 1) * DISPLAY_W], BLACK, "outline reaches the bottom-left corner");
+        assert_eq!(buf[0], WHITE, "the top is untouched");
+        let (w, h) = plate_size("CO2 612 ppm  72°  41%", 2);
+        assert_eq!(buf[(DISPLAY_H - h - 1) * DISPLAY_W + 3], WHITE, "nothing above the plate");
+        assert_eq!(buf[(DISPLAY_H - 1) * DISPLAY_W + w + 2], WHITE, "nothing to its right");
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub struct Config {
     pub location: Location,
     pub homeassistant: HomeAssistant,
     pub buttons: Buttons,
+    pub sensor: Sensor,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -56,6 +57,8 @@ pub struct Overlay {
     pub margin: usize,
     /// "auto", "light" or "dark".
     pub plate: String,
+    /// Bottom-left plate with the CO2, temperature and humidity of the room (needs `[sensor] enabled`).
+    pub show_air: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -77,6 +80,29 @@ pub struct HomeAssistant {
 
 /// Each button runs one thing: `scene.<name>` or `script.<name>` (called in Home Assistant), or the built-in
 /// `next_photo`. An empty string disables the button.
+/// The Sensirion SCD40 CO2, temperature and humidity sensor on the I2C bus (Adafruit SCD-40 breakout, address 0x62).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct Sensor {
+    pub enabled: bool,
+    /// The sensor is on `/dev/i2c-N`; 1 is the header's SDA/SCL (GPIO2/GPIO3).
+    pub i2c_bus: u8,
+    /// One sample every 30 s instead of every 5 s, using less power.
+    pub low_power: bool,
+    /// Degrees Celsius to subtract for the heat of the board and the panel (0 to 175). The sensor's factory value is 4;
+    /// tune it against a thermometer once the frame is in its case.
+    pub temperature_offset_c: f32,
+    /// Height above sea level in metres, to compensate CO2 for air pressure.
+    pub altitude_m: u16,
+    /// Ambient pressure in hPa (overrides `altitude_m`; 0 = not used).
+    pub pressure_hpa: u16,
+    /// Automatic self calibration: assumes the sensor sees fresh air (about 400 ppm) now and then. Switch it off for a
+    /// room that is never aired.
+    pub auto_calibration: bool,
+    /// CO2 ppm at which the air quality drops from Good to Fair, Moderate, Poor, Very poor and Extremely poor.
+    pub thresholds_ppm: [u16; 5],
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Buttons {
@@ -105,7 +131,21 @@ impl Default for Display {
 }
 impl Default for Overlay {
     fn default() -> Self {
-        Overlay { enabled: true, date_format: "%A %B %-d".into(), units: "fahrenheit".into(), scale: 2, margin: 0, plate: "auto".into() }
+        Overlay { enabled: true, date_format: "%A %B %-d".into(), units: "fahrenheit".into(), scale: 2, margin: 0, plate: "auto".into(), show_air: true }
+    }
+}
+impl Default for Sensor {
+    fn default() -> Self {
+        Sensor {
+            enabled: false,
+            i2c_bus: 1,
+            low_power: false,
+            temperature_offset_c: 4.0,
+            altitude_m: 0,
+            pressure_hpa: 0,
+            auto_calibration: true,
+            thresholds_ppm: [800, 1000, 1500, 2000, 5000],
+        }
     }
 }
 impl Default for HomeAssistant {
@@ -172,6 +212,13 @@ impl Config {
         if self.display.min_refresh_seconds < 60 {
             bail!("display.min_refresh_seconds must be at least 60");
         }
+        let sn = &self.sensor;
+        if !(0.0..=175.0).contains(&sn.temperature_offset_c) {
+            bail!("sensor.temperature_offset_c must be 0 to 175");
+        }
+        if sn.thresholds_ppm[0] == 0 || sn.thresholds_ppm.windows(2).any(|w| w[0] >= w[1]) {
+            bail!("sensor.thresholds_ppm must be five increasing, positive numbers");
+        }
         for (name, v) in [("a", &self.buttons.a), ("b", &self.buttons.b), ("c", &self.buttons.c), ("d", &self.buttons.d)] {
             if !v.is_empty() && v != "next_photo" && !(v.starts_with("scene.") || v.starts_with("script.")) {
                 bail!("buttons.{name} must be a scene.* or script.* entity, \"next_photo\", or empty");
@@ -230,6 +277,22 @@ mod tests {
             c.overlay.date_format = good.into();
             c.validate().unwrap_or_else(|e| panic!("{good:?}: {e}"));
         }
+    }
+
+    #[test]
+    fn sensor_settings_are_checked() {
+        let mut c = Config::default();
+        c.sensor.temperature_offset_c = 176.0;
+        assert!(c.validate().is_err());
+        let mut c = Config::default();
+        c.sensor.temperature_offset_c = f32::NAN;
+        assert!(c.validate().is_err());
+        let mut c = Config::default();
+        c.sensor.thresholds_ppm = [800, 800, 1500, 2000, 5000];
+        assert!(c.validate().is_err());
+        assert!(toml::from_str::<Config>("[sensor]\nenabeld = true").is_err());
+        let c: Config = toml::from_str("[sensor]\nenabled = true\ni2c_bus = 3").unwrap();
+        assert!(c.sensor.enabled && c.sensor.i2c_bus == 3 && c.sensor.auto_calibration);
     }
 
     #[test]

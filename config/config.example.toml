@@ -20,6 +20,18 @@ units = "fahrenheit"                 # top right high/low: "fahrenheit" or "cels
 scale = 2                            # 1 to 4; the font is 11 px x this (2 = 22 px)
 margin = 0                           # pixels between the plates and the panel edge; 0 = right in the corners
 plate = "auto"                       # "auto" (contrasts with the photo), "light" or "dark"
+show_air = true                      # bottom-left plate with CO2, temperature and humidity (needs [sensor] enabled)
+
+# Sensirion SCD40 CO2/temperature/humidity sensor (Adafruit SCD-40) on the Pi's I2C pins. Needs the setup script's I2C step.
+[sensor]
+enabled = false
+i2c_bus = 1                          # /dev/i2c-1: header pins 3 (SDA) and 5 (SCL)
+low_power = false                    # one sample every 30 s instead of 5 s
+temperature_offset_c = 4.0           # 0 to 175; subtracted to cancel the heat of the board; tune against a thermometer
+altitude_m = 0                       # metres above sea level (CO2 compensation)
+pressure_hpa = 0                     # ambient pressure; overrides altitude_m when not 0
+auto_calibration = true              # assumes fresh air (about 400 ppm) now and then; turn off for a room that is never aired
+thresholds_ppm = [800, 1000, 1500, 2000, 5000]   # CO2 where air quality drops from Good to Fair, Moderate, Poor, Very poor, Extremely poor
 
 [location]
 # Filled in by: inkyframe geocode 10001 --config /etc/inkyframe/config.toml

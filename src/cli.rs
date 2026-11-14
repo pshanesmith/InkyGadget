@@ -16,8 +16,9 @@ inkyframe: bedside photo frame for the Inky Impression 5.7\"
   inkyframe geocode ZIP [--config FILE]         look up a US ZIP code and store the location
   inkyframe ha-discover [--config FILE]         list Home Assistant scenes and scripts (needs INKYFRAME_HA_TOKEN)
   inkyframe hwtest [--white] [--buttons]        colour bars (or a white screen) on the panel, and watch the buttons
+  inkyframe hwtest --sensor [--config FILE]     print the SCD40 readings for a minute (stop the service first)
   inkyframe preview PHOTO --out FILE.png        render a photo as the panel would show it
-      [--left TEXT] [--right TEXT] [--bars black|white] [--plate auto|light|dark]
+      [--left TEXT] [--right TEXT] [--bottom TEXT] [--bars black|white] [--plate auto|light|dark]
       [--scale N] [--saturation 0..1]
   inkyframe --version
 ";
@@ -44,7 +45,7 @@ pub fn preview(args: &[String]) -> Result<()> {
         saturation: opt(args, "--saturation").map(str::parse).transpose()?.unwrap_or(0.5),
         overlay: OverlayStyle { scale: opt(args, "--scale").map(str::parse).transpose()?.unwrap_or(2), plate, ..Default::default() },
     };
-    let overlay = Overlay { left: opt(args, "--left").map(String::from), right: opt(args, "--right").map(String::from) };
+    let overlay = Overlay { left: opt(args, "--left").map(String::from), right: opt(args, "--right").map(String::from), bottom: opt(args, "--bottom").map(String::from) };
     let t = std::time::Instant::now();
     let prepared = prepare_file(Path::new(photo), bars, &Limits::default())?;
     let t_prep = t.elapsed();
@@ -64,6 +65,12 @@ pub fn check_config(path: &Path) -> Result<()> {
     println!("  date \"{}\", {} at \"{}\"", cfg.overlay.date_format, cfg.overlay.units, if cfg.location.label.is_empty() { "no location set" } else { &cfg.location.label });
     for (name, target) in buttons {
         println!("  button {name}: {}", if target.is_empty() { "off" } else { target });
+    }
+    let s = &cfg.sensor;
+    if s.enabled {
+        println!("  sensor: SCD40 on /dev/i2c-{}, {}, temperature offset {} C{}", s.i2c_bus, if s.low_power { "a sample every 30 s" } else { "a sample every 5 s" }, s.temperature_offset_c, if cfg.overlay.show_air && cfg.overlay.enabled { ", shown bottom left" } else { "" });
+    } else {
+        println!("  sensor: off");
     }
     Ok(())
 }
@@ -94,7 +101,9 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
             break;
         }
     });
+    let sensor_cfg = cfg.sensor.clone();
     let mut app = App::new(cfg, panel, rx, tx.clone())?;
+    crate::sensor::start(&sensor_cfg, app.air_handle(), app.stop_flag(), emulate.is_some());
     // On SIGTERM/SIGINT: tell long waits (clock, weather) to end, then wake the main loop.
     let stop = app.stop_flag();
     let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT])?;
@@ -165,7 +174,13 @@ pub fn ha_discover(cfg: &Config) -> Result<()> {
 }
 
 /// `inkyframe hwtest [--buttons]`: colour bars on the panel, then print button presses.
-pub fn hwtest(args: &[String]) -> Result<()> {
+pub fn hwtest(args: &[String], config_path: &str) -> Result<()> {
+    if args.iter().any(|a| a == "--sensor") {
+        // The sensor on its own; the service must be stopped (two programs would fight over its measurement mode).
+        let path = Path::new(config_path);
+        let cfg = if path.exists() { Config::load(path)? } else { Config::default() };
+        return crate::sensor::test(&cfg.sensor);
+    }
     let mut panel = open_panel()?;
     let white = args.iter().any(|a| a == "--white");
     println!("drawing {} (about 30 s) ...", if white { "a plain white screen" } else { "colour bars" });
