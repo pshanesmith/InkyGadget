@@ -111,6 +111,18 @@ pub struct Matter {
     pub enabled: bool,
     /// The name controllers show for the device.
     pub device_name: String,
+    /// Also show the four panel buttons as Matter push buttons (Generic Switch): taps, double taps and long presses
+    /// become events that Home Assistant automations can trigger on.
+    pub buttons: bool,
+    /// Names for the four buttons (A to D), shown by controllers; an empty one becomes "Button A" and so on.
+    pub button_labels: [String; 4],
+    /// Holding a button this long is a long press.
+    pub long_press_ms: u64,
+    /// A tap sequence ends when the button has been up this long: Home Assistant sees a single tap this much later.
+    pub multi_press_ms: u64,
+    /// Whether a button also runs its own action (`[buttons]`) on every press. Turn it off to let Home Assistant
+    /// decide everything; `matter_pairing` always runs.
+    pub local_actions: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,7 +158,15 @@ impl Default for Overlay {
 }
 impl Default for Matter {
     fn default() -> Self {
-        Matter { enabled: false, device_name: "InkyGadget".into() }
+        Matter {
+            enabled: false,
+            device_name: "InkyGadget".into(),
+            buttons: false,
+            button_labels: Default::default(),
+            long_press_ms: 500,
+            multi_press_ms: 300,
+            local_actions: true,
+        }
     }
 }
 impl Default for Sensor {
@@ -233,6 +253,16 @@ impl Config {
         if self.matter.device_name.trim().is_empty() || self.matter.device_name.len() > 32 {
             bail!("matter.device_name must be 1 to 32 characters");
         }
+        let m = &self.matter;
+        if m.buttons && !m.enabled {
+            bail!("matter.buttons needs [matter] enabled = true");
+        }
+        if !(200..=5000).contains(&m.long_press_ms) || !(100..=1000).contains(&m.multi_press_ms) {
+            bail!("matter.long_press_ms must be 200 to 5000 and matter.multi_press_ms 100 to 1000");
+        }
+        if m.button_labels.iter().any(|l| l.len() > 16) {
+            bail!("matter.button_labels must be at most 16 characters each");
+        }
         let sn = &self.sensor;
         if !(0.0..=175.0).contains(&sn.temperature_offset_c) {
             bail!("sensor.temperature_offset_c must be 0 to 175");
@@ -314,6 +344,23 @@ mod tests {
         assert!(toml::from_str::<Config>("[sensor]\nenabeld = true").is_err());
         let c: Config = toml::from_str("[sensor]\nenabled = true\ni2c_bus = 3").unwrap();
         assert!(c.sensor.enabled && c.sensor.i2c_bus == 3 && c.sensor.auto_calibration);
+    }
+
+    #[test]
+    fn matter_button_settings_are_checked() {
+        let mut c = Config::default();
+        c.matter.buttons = true;
+        assert!(c.validate().is_err(), "needs matter enabled");
+        c.matter.enabled = true;
+        c.sensor.enabled = true;
+        c.validate().unwrap();
+        c.matter.long_press_ms = 50;
+        assert!(c.validate().is_err());
+        c.matter.long_press_ms = 500;
+        c.matter.button_labels[2] = "x".repeat(17);
+        assert!(c.validate().is_err());
+        let c: Config = toml::from_str("[matter]\nbutton_labels = [\"Movie\", \"\", \"\", \"Next\"]").unwrap();
+        assert_eq!(c.matter.button_labels[0], "Movie");
     }
 
     #[test]

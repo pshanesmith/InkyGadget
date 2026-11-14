@@ -133,6 +133,17 @@ built-in action `matter_pairing` (for example `c = "matter_pairing"`): it reopen
 paired, add other apps from the first app's own "pairing mode" option; the button then does nothing.
 `inkyframe matter qr --panel screen.png` draws the screen to a picture.
 
+### The panel buttons as Matter push buttons (optional)
+
+With `[matter] buttons = true` each of the four panel buttons also becomes a Matter **Generic Switch** (endpoints 2 to 5,
+numbered 1 to 4 from the top, named by `button_labels`). In Home Assistant each shows as an **event entity**: tap and double
+tap (`multi_press_1`, `multi_press_2`), `long_press` and `long_release`. Trigger automations on them, for example "button C
+long press runs the goodnight script"; the buttons keep their own actions from `[buttons]` too, unless `local_actions =
+false`. A single tap reaches Home Assistant `multi_press_ms` (300 ms) after the press, because the frame waits to see
+whether a second tap follows. `matter_pairing` always works locally. Turning the buttons on or off changes the node's
+layout: if the frame is already paired, use Home Assistant's "Re-interview device" on it (or remove and add it again).
+`inkyframe hwtest --buttons` prints each press, hold and release as the events the buttons would send.
+
 ### Home Assistant
 
 The buttons only call things you define in Home Assistant. Each of A, B and C is one `scene.*` or one `script.*`

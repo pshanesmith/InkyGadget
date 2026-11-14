@@ -74,6 +74,12 @@ pub fn check_config(path: &Path) -> Result<()> {
     } else {
         println!("  sensor: off");
     }
+    let m = &cfg.matter;
+    if m.enabled {
+        println!("  matter: on{}", if m.buttons { format!(", buttons shown as push buttons (long press {} ms, double-tap wait {} ms{})", m.long_press_ms, m.multi_press_ms, if m.local_actions { "" } else { ", own actions off" }) } else { String::new() });
+    } else {
+        println!("  matter: off");
+    }
     Ok(())
 }
 
@@ -90,10 +96,17 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
         None => open_panel()?,
     };
     let actions = Actions::new(&cfg, tx.clone());
+    // With Matter buttons on, every button also reports taps, double taps and long presses to the Matter node.
+    let bus = button_bus(&cfg);
+    let matter_buttons = bus.as_ref().map(|b| {
+        let timing = crate::switchlogic::Timing { long_press_ms: cfg.matter.long_press_ms, multi_press_ms: cfg.matter.multi_press_ms, multi_press: true, max_presses: 2 };
+        (timing, b.clone() as std::sync::Arc<dyn crate::buttons::SwitchSink>)
+    });
+    let hub = crate::buttons::Hub::new(actions, matter_buttons, cfg.matter.local_actions);
     if emulate.is_some() {
-        std::thread::spawn(move || crate::buttons::watch_stdin(actions));
+        std::thread::spawn(move || crate::buttons::watch_stdin(hub));
     } else {
-        spawn_gpio_buttons(actions);
+        spawn_gpio_buttons(hub);
     }
     // Rescan the shared folder now and then (a file counts once it has stopped changing).
     let scan_tx = tx.clone();
@@ -109,7 +122,7 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
     crate::sensor::start(&sensor_cfg, app.air_handle(), app.stop_flag(), emulate.is_some());
     // The pairing code first: it makes the identity file that the Matter node reads right after, so both agree.
     let code = pairing_code(&matter_cfg);
-    let matter_cmds = start_matter(&matter_cfg, app.air_handle(), tx.clone());
+    let matter_cmds = start_matter(&matter_cfg, app.air_handle(), tx.clone(), bus);
     if let Some(code) = code {
         app.set_pairing(code, matter_cmds);
     }
@@ -130,14 +143,19 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
 
 /// The Matter node runs on its own thread; if it fails (no network yet, say) it is started again a minute later.
 #[cfg(feature = "matter")]
-fn start_matter(cfg: &Config, latest: crate::sensor::Latest, tx: std::sync::mpsc::Sender<crate::app::Event>) -> Option<std::sync::mpsc::Sender<crate::pairing::MatterCommand>> {
+fn start_matter(
+    cfg: &Config,
+    latest: crate::sensor::Latest,
+    tx: std::sync::mpsc::Sender<crate::app::Event>,
+    bus: Option<std::sync::Arc<crate::buttonbus::ButtonBus>>,
+) -> Option<std::sync::mpsc::Sender<crate::pairing::MatterCommand>> {
     if !cfg.matter.enabled {
         return None;
     }
     let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let cfg = cfg.clone();
     std::thread::spawn(move || loop {
-        match crate::matter::run(&cfg, latest.clone(), tx.clone(), &cmd_rx) {
+        match crate::matter::run(&cfg, latest.clone(), tx.clone(), &cmd_rx, bus.clone()) {
             Ok(()) => {}
             Err(e) => log::error!("Matter node stopped: {e:#}; starting it again in a minute"),
         }
@@ -147,7 +165,12 @@ fn start_matter(cfg: &Config, latest: crate::sensor::Latest, tx: std::sync::mpsc
 }
 
 #[cfg(not(feature = "matter"))]
-fn start_matter(cfg: &Config, _latest: crate::sensor::Latest, _tx: std::sync::mpsc::Sender<crate::app::Event>) -> Option<std::sync::mpsc::Sender<crate::pairing::MatterCommand>> {
+fn start_matter(
+    cfg: &Config,
+    _latest: crate::sensor::Latest,
+    _tx: std::sync::mpsc::Sender<crate::app::Event>,
+    _bus: Option<std::sync::Arc<crate::buttonbus::ButtonBus>>,
+) -> Option<std::sync::mpsc::Sender<crate::pairing::MatterCommand>> {
     if cfg.matter.enabled {
         log::error!("[matter] is enabled, but this build has no Matter support (build with --features matter)");
     }
@@ -242,17 +265,22 @@ fn open_panel() -> Result<Box<dyn crate::display::Panel>> {
     bail!("this build has no panel driver; use --emulate FILE.png, or build with --features hardware for the Pi")
 }
 
+/// The queue between the button thread and the Matter node, when the Matter buttons are on (and this build has Matter).
+fn button_bus(cfg: &Config) -> Option<std::sync::Arc<crate::buttonbus::ButtonBus>> {
+    (cfg.matter.enabled && cfg.matter.buttons && cfg!(feature = "matter")).then(|| std::sync::Arc::new(crate::buttonbus::ButtonBus::new()))
+}
+
 #[cfg(all(feature = "hardware", target_os = "linux"))]
-fn spawn_gpio_buttons(actions: crate::buttons::Actions) {
+fn spawn_gpio_buttons(hub: crate::buttons::Hub) {
     std::thread::spawn(move || {
-        if let Err(e) = crate::buttons::watch_gpio(actions) {
+        if let Err(e) = crate::buttons::watch_gpio(hub) {
             log::error!("buttons stopped working: {e:#}");
         }
     });
 }
 
 #[cfg(not(all(feature = "hardware", target_os = "linux")))]
-fn spawn_gpio_buttons(_actions: crate::buttons::Actions) {}
+fn spawn_gpio_buttons(_hub: crate::buttons::Hub) {}
 
 /// `inkyframe geocode ZIP [--config FILE]`: look up the location once and write it into the config.
 pub fn geocode(args: &[String], config_path: &str) -> Result<()> {
@@ -312,12 +340,23 @@ pub fn hwtest(args: &[String], config_path: &str) -> Result<()> {
 
 #[cfg(all(feature = "hardware", target_os = "linux"))]
 fn buttons_test() -> Result<()> {
+    use crate::buttons::{Button, Hub, SwitchSink};
+    use crate::switchlogic::{SwitchEvent, Timing};
+    /// Prints what the Matter buttons would send.
+    struct Print;
+    impl SwitchSink for Print {
+        fn send(&self, button: Button, event: SwitchEvent, down: bool) {
+            println!("  {button:?}: {event:?} (now {})", if down { "held" } else { "up" });
+        }
+    }
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut cfg = Config::default();
-    cfg.buttons.d = "next_photo".into();
+    let cfg = Config::default();
     let actions = crate::buttons::Actions::new(&cfg, tx);
+    let hub = Hub::new(actions, Some((Timing::default(), std::sync::Arc::new(Print))), true);
     std::thread::spawn(move || {
-        let _ = crate::buttons::watch_gpio(actions);
+        if let Err(e) = crate::buttons::watch_gpio(hub) {
+            eprintln!("buttons: {e:#}");
+        }
     });
     for _ in rx {}
     Ok(())

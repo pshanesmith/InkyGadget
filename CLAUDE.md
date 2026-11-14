@@ -52,6 +52,14 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   waits up to 20 s for the node's first report so the first refresh is the QR code, not welcome-then-QR. The passcode lives in
   `<state>/matter/identity.json` and cli.rs makes it before the node thread starts, so panel and node always agree. A test reads
   the QR code back out of the rendered screen (rqrr). The `matter_pairing` button action reopens the 15-minute window.
+- **Matter buttons** (`src/switchlogic.rs`, `src/buttonbus.rs`, `Hub` in `src/buttons.rs`): each panel button is a Generic Switch
+  (MS|MSR|MSL|MSM). The pure state machine (timestamps in, Switch events out; sequences from Core spec 1.13) runs on the
+  button thread, which watches both GPIO edges; events cross to the Matter thread through a std-only per-button queue
+  (`ButtonBus`) that the Switch handler's `run()` awaits and turns into `emit_event` calls (only the handler context can emit).
+  Traps already hit: `with!(required)` drops `MultiPressMax` (named explicitly, a test checks); CurrentPosition must be 1 while held;
+  the node's ConfigurationVersion is bumped (rs-matter keeps the number) when the layout changes (`layout.json` remembers it);
+  Home Assistant only exposes `multi_press_N`/`long_press`/`long_release` when multi-press is on, so a tap is reported after
+  `multi_press_ms`. The chain of handlers needs `#![recursion_limit = "256"]`.
 - **systemd unit**: do not add `PrivateDevices`, `DevicePolicy` or `ProtectClock` (each turns the device list into an allow-list that
   excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
   does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it
