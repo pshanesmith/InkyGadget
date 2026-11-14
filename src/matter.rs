@@ -272,7 +272,12 @@ struct Co2H {
 }
 
 impl co2::ClusterHandler for Co2H {
-    const CLUSTER: Cluster<'static> = co2::FULL_CLUSTER.with_features(co2::Feature::NUMERIC_MEASUREMENT.bits()).with_attrs(with!(required));
+    // `required` alone leaves out the attributes the NumericMeasurement feature adds, so name them: without
+    // MeasuredValue no controller shows a CO2 reading.
+    const CLUSTER: Cluster<'static> = co2::FULL_CLUSTER.with_features(co2::Feature::NUMERIC_MEASUREMENT.bits()).with_attrs(with!(
+        required;
+        co2::AttributeId::MeasuredValue | co2::AttributeId::MinMeasuredValue | co2::AttributeId::MaxMeasuredValue | co2::AttributeId::MeasurementUnit
+    ));
 
     fn dataver(&self) -> u32 {
         self.dataver.get()
@@ -545,6 +550,21 @@ mod tests {
         assert_eq!(room.air_quality(), AirQuality::Moderate);
         assert_eq!(temp_centi(&room.reading().unwrap()), 2150);
         assert_eq!(humidity_centi(&room.reading().unwrap()), 4500);
+    }
+
+    /// The attribute ids a cluster actually serves.
+    fn served(c: &Cluster<'static>) -> Vec<u32> {
+        c.attributes.iter().map(|a| a.id).collect()
+    }
+
+    #[test]
+    fn every_cluster_serves_the_attributes_controllers_need() {
+        // Found on the Pi: CO2 once served only MeasurementMedium, so Home Assistant showed no CO2 value.
+        let has = |c: &Cluster<'static>, ids: &[u32]| ids.iter().all(|i| served(c).contains(i));
+        assert!(has(&<Co2H as co2::ClusterHandler>::CLUSTER, &[0x0, 0x1, 0x2, 0x8, 0x9]), "CO2: {:?}", served(&<Co2H as co2::ClusterHandler>::CLUSTER));
+        assert!(has(&<TemperatureH as temperature::ClusterHandler>::CLUSTER, &[0x0, 0x1, 0x2]));
+        assert!(has(&<HumidityH as humidity::ClusterHandler>::CLUSTER, &[0x0, 0x1, 0x2]));
+        assert!(has(&<AirQualityH as air_quality::ClusterHandler>::CLUSTER, &[0x0]));
     }
 
     #[test]
