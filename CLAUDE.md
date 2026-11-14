@@ -36,8 +36,8 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   `pshanesmith/scd4x-rust` (a git dependency on tag v0.1.0; for driver work, temporarily point it at a local path
   `../scd4x-rust`). The sensor keeps measuring across a restart, so `init` always stops it first. The service must not run
   while `hwtest --sensor` does. I2C needs `dtparam=i2c_arm=on`, the `i2c-dev` module and the `i2c` group (all in the setup script
-  and unit). Plan: expose it as a Matter Air Quality Sensor (rs-matter), pairing QR on the panel; see the plan in the session
-  notes if it is still there, else the README.
+  and unit). It feeds the Matter node below; the README
+  explains the offset calibration.
 - **Matter** (`src/matter.rs`, cargo feature `matter`, on in `tools/cross-build.sh`): rs-matter 0.4.1 (pure Rust, RustCrypto). Its
   cluster code is generated at build time from the Matter IDL, so Air Quality, CO2 / temperature / humidity measurement and
   Identify exist and are implemented here as `ClusterHandler`s. IP-only commissioning (`DiscoveryCapabilities::IP`), Ethernet-style

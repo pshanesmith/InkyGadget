@@ -110,6 +110,21 @@ against a thermometer. Then set `[sensor] enabled = true`, restart the service a
 Automatic self calibration expects the sensor to see fresh air (about 400 ppm) now and then; switch it off for a room
 that is never aired.
 
+**Calibrating the temperature.** The sensor reports the temperature after subtracting `temperature_offset_c` (4 C to start
+with), to cancel the heat of the frame itself. Put a reference thermometer next to the frame, leave both for about 10
+minutes, then read the frame's temperature one of two ways:
+
+- *Home Assistant:* the frame's temperature entity (Home Assistant may show it in F or round it). Nothing needs stopping.
+- *On the Pi:* `sudo systemctl stop inkyframe`, then `/opt/inkyframe/bin/inkyframe hwtest --sensor --config /etc/inkyframe/config.toml`
+  prints a reading every 5 s for a minute (it uses the offset from the config), then `sudo systemctl start inkyframe`.
+  Matter and the buttons are off meanwhile.
+
+The new offset is the current one plus how much the frame reads above the reference:
+`new = current + (frame - reference)`. For example, with 4 C set, a frame reading 23.5 C against a reference of 21.0 C
+needs 4 + 2.5 = 6.5. Set `temperature_offset_c` in `/etc/inkyframe/config.toml`, run `sudo systemctl restart inkyframe`,
+wait another 10 minutes and compare again. The humidity reading depends on the temperature, so it improves with it; the CO2
+reading does not.
+
 ### Matter air-quality sensor (optional)
 
 With the sensor above and a build with the `matter` feature (the Pi build has it), `[matter] enabled = true` makes the
