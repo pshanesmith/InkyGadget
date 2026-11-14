@@ -9,8 +9,6 @@ NotifyAccess=main
 User=inkyframe
 Group=inkyframe
 SupplementaryGroups=spi gpio i2c
-# The Home Assistant token (INKYFRAME_HA_TOKEN) comes only from this file (root-owned, mode 0600).
-EnvironmentFile=-/etc/inkyframe/secrets.env
 ExecStart=/opt/inkyframe/bin/inkyframe run --config /etc/inkyframe/config.toml
 Restart=always
 RestartSec=10

@@ -14,7 +14,6 @@ inkyframe: bedside photo frame for the Inky Impression 5.7\"
                                                 run the frame (the systemd service); --emulate writes PNGs and reads a/b/c/d from stdin
   inkyframe check-config [--config FILE]        check that the config file loads (exit status 1 and the reason if not)
   inkyframe geocode ZIP [--config FILE]         look up a US ZIP code and store the location
-  inkyframe ha-discover [--config FILE]         list Home Assistant scenes and scripts (needs INKYFRAME_HA_TOKEN)
   inkyframe matter qr [--out FILE.png] [--panel FILE.png]   the Matter pairing code (QR text, manual code, QR picture, or the whole pairing screen)
   inkyframe matter reset                        forget all Matter controllers and make a new pairing code (stop the service first)
   inkyframe hwtest [--white] [--buttons]        colour bars (or a white screen) on the panel, and watch the buttons
@@ -61,13 +60,10 @@ pub fn preview(args: &[String]) -> Result<()> {
 /// `inkyframe check-config`: load and validate the file, and say what it will do.
 pub fn check_config(path: &Path) -> Result<()> {
     let cfg = Config::load(path)?;
-    let buttons = [("A", &cfg.buttons.a), ("B", &cfg.buttons.b), ("C", &cfg.buttons.c), ("D", &cfg.buttons.d)];
     println!("{} is valid", path.display());
     println!("  new photo at {:?}{}", cfg.photos.refresh_times, if cfg.photos.interval_minutes > 0 { format!(" and every {} min", cfg.photos.interval_minutes) } else { String::new() });
     println!("  date \"{}\", {} at \"{}\"", cfg.overlay.date_format, cfg.overlay.units, if cfg.location.label.is_empty() { "no location set" } else { &cfg.location.label });
-    for (name, target) in buttons {
-        println!("  button {name}: {}", if target.is_empty() { "off" } else { target });
-    }
+    println!("  buttons: D shows the next photo, held 3 s it shows the pairing code");
     let s = &cfg.sensor;
     if s.enabled {
         println!("  sensor: SCD40 on /dev/i2c-{}, {}, temperature offset {} C{}", s.i2c_bus, if s.low_power { "a sample every 30 s" } else { "a sample every 5 s" }, s.temperature_offset_c, if cfg.overlay.show_air && cfg.overlay.enabled { ", shown bottom left" } else { "" });
@@ -86,8 +82,7 @@ pub fn check_config(path: &Path) -> Result<()> {
 
 pub fn run(cfg: Config, args: &[String]) -> Result<()> {
     use crate::app::{heartbeat, App, Event, SCAN_SECONDS};
-    use crate::buttons::Actions;
-    use crate::display::{Emulator, Panel};
+        use crate::display::{Emulator, Panel};
     use std::sync::mpsc::channel;
 
     let (tx, rx) = channel();
@@ -96,14 +91,13 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
         Some(out) => Box::new(Emulator { out: out.into() }),
         None => open_panel()?,
     };
-    let actions = Actions::new(&cfg, tx.clone());
     // With Matter buttons on, every button also reports taps, double taps and long presses to the Matter node.
     let bus = button_bus(&cfg);
     let matter_buttons = bus.as_ref().map(|b| {
         let timing = crate::switchlogic::Timing { long_press_ms: cfg.matter.long_press_ms, multi_press_ms: cfg.matter.multi_press_ms, multi_press: true, max_presses: 2 };
         (timing, b.clone() as std::sync::Arc<dyn crate::buttons::SwitchSink>, cfg.matter_buttons())
     });
-    let hub = crate::buttons::Hub::new(actions, matter_buttons);
+    let hub = crate::buttons::Hub::new(tx.clone(), matter_buttons);
     if emulate.is_some() {
         std::thread::spawn(move || crate::buttons::watch_stdin(hub));
     } else {
@@ -299,22 +293,6 @@ pub fn geocode(args: &[String], config_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// `inkyframe ha-discover`: list the scenes and scripts Home Assistant has, to pick the button targets from.
-/// Reads INKYFRAME_HA_TOKEN (and INKYFRAME_HA_URL) from the environment; run it with the token loaded, for example
-/// `sudo sh -c '. /etc/inkyframe/secrets.env && export INKYFRAME_HA_TOKEN && inkyframe ha-discover'`.
-pub fn ha_discover(cfg: &Config) -> Result<()> {
-    let token = std::env::var(crate::ha::TOKEN_ENV).ok().filter(|t| !t.is_empty()).with_context(|| format!("{} is not set", crate::ha::TOKEN_ENV))?;
-    let url = std::env::var(crate::ha::URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| cfg.homeassistant.url.clone());
-    let found = crate::ha::list_scenes_and_scripts(&url, &token, std::time::Duration::from_secs(cfg.homeassistant.timeout_seconds))?;
-    if found.is_empty() {
-        println!("no scenes or scripts found at {url}");
-    }
-    for (id, name) in found {
-        println!("{id:<50} {name}");
-    }
-    Ok(())
-}
-
 /// `inkyframe hwtest [--buttons]`: colour bars on the panel, then print button presses.
 pub fn hwtest(args: &[String], config_path: &str) -> Result<()> {
     if args.iter().any(|a| a == "--sensor") {
@@ -351,9 +329,7 @@ fn buttons_test() -> Result<()> {
         }
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let cfg = Config::default();
-    let actions = crate::buttons::Actions::new(&cfg, tx);
-    let hub = Hub::new(actions, Some((Timing::default(), std::sync::Arc::new(Print), [true; 4])));
+    let hub = Hub::new(tx, Some((Timing::default(), std::sync::Arc::new(Print), [true; 4])));
     std::thread::spawn(move || {
         if let Err(e) = crate::buttons::watch_gpio(hub) {
             eprintln!("buttons: {e:#}");

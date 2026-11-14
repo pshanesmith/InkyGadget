@@ -13,7 +13,6 @@ pub mod dither;
 pub mod display;
 pub mod fsutil;
 pub mod geocode;
-pub mod ha;
 pub mod heic_stream;
 pub mod overlay;
 pub mod pairing;

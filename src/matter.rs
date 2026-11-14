@@ -510,11 +510,18 @@ fn endpoints_for(exposed: [bool; 4]) -> &'static [Endpoint<'static>] {
 #[cfg(test)]
 const NODE: Node<'static> = Node { endpoints: &BASE_ENDPOINTS };
 
-/// What the button endpoints need: the event queue, and the names shown for them.
-struct Buttons<'a> {
+/// What the button endpoints need: the event queue.
+struct Buttons {
     bus: Arc<ButtonBus>,
-    labels: [[FixedLabelEntry<'a>; 1]; 4],
 }
+
+/// The names the Matter Server's device view shows for the buttons. (Home Assistant itself names the entities by endpoint.)
+static BUTTON_LABELS: [[FixedLabelEntry<'static>; 1]; 4] = [
+    [FixedLabelEntry { label: "name", value: "Button A" }],
+    [FixedLabelEntry { label: "name", value: "Button B" }],
+    [FixedLabelEntry { label: "name", value: "Button C" }],
+    [FixedLabelEntry { label: "name", value: "Button D" }],
+];
 
 /// The handlers of one button's endpoint (a macro, because each `chain` is a new type).
 macro_rules! with_button {
@@ -524,7 +531,7 @@ macro_rules! with_button {
             .chain(|e, c| e == BUTTON_EP0 + $i && c == identify::CLUSTER.id, Async(IdentifyHandler::new(Dataver::new_rand(&mut $rand)).adapt()))
             .chain(
                 |e, c| e == BUTTON_EP0 + $i && c == fixed_label::CLUSTER.id,
-                Async(FixedLabelHandler::new(Dataver::new_rand(&mut $rand), &$buttons.labels[$i]).adapt()),
+                Async(FixedLabelHandler::new(Dataver::new_rand(&mut $rand), &BUTTON_LABELS[$i]).adapt()),
             )
             .chain(
                 |e, c| e == BUTTON_EP0 + $i && c == SWITCH_CLUSTER,
@@ -533,7 +540,7 @@ macro_rules! with_button {
     };
 }
 
-fn data_model<'a>(mut rand: impl rand10::Rng + Copy, room: &Room, node: Node<'static>, buttons: &'a Buttons<'a>) -> impl DataModel + 'a {
+fn data_model<'a>(mut rand: impl rand10::Rng + Copy, room: &Room, node: Node<'static>, buttons: &'a Buttons) -> impl DataModel + 'a {
     let (aq, c, t, h) = (
         AirQualityH { dataver: Dataver::new_rand(&mut rand), room: room.clone() },
         Co2H { dataver: Dataver::new_rand(&mut rand), room: room.clone() },
@@ -600,14 +607,7 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands
     let crypto = default_crypto(rand10::rng(), DAC_PRIVKEY);
     let rand = crypto.rand().map_err(|e| anyhow::anyhow!("random numbers: {e:?}"))?;
 
-    let names: [String; 4] = std::array::from_fn(|i| {
-        let given = cfg.matter.button_labels[i].trim();
-        if given.is_empty() { format!("Button {}", ['A', 'B', 'C', 'D'][i]) } else { given.to_string() }
-    });
-    let buttons = Buttons {
-        bus: bus.unwrap_or_default(),
-        labels: std::array::from_fn(|i| [FixedLabelEntry { label: "name", value: names[i].as_str() }]),
-    };
+    let buttons = Buttons { bus: bus.unwrap_or_default() };
     let node = Node { endpoints: endpoints_for(exposed) };
     let im = InteractionModel::new(&matter, &crypto, &buffers, data_model(rand, &room, node, &buttons), &kv, &state);
     futures_lite::future::block_on(im.startup()).map_err(|e| anyhow::anyhow!("data model start-up: {e:?}"))?;

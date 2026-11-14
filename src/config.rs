@@ -1,5 +1,4 @@
-//! Configuration (`/etc/inkyframe/config.toml`). Secrets (the Home Assistant token) are never in here: they
-//! come from the environment (`INKYFRAME_HA_TOKEN`, set by `secrets.env`).
+//! Configuration (`/etc/inkyframe/config.toml`). It holds no secrets: the frame never logs in to Home Assistant.
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -12,8 +11,12 @@ pub struct Config {
     pub display: Display,
     pub overlay: Overlay,
     pub location: Location,
-    pub homeassistant: HomeAssistant,
-    pub buttons: Buttons,
+    /// Removed in 0.3.0 (Home Assistant scene and script buttons); accepted and ignored so that an old config still loads.
+    #[serde(rename = "homeassistant")]
+    pub legacy_homeassistant: Option<toml::Table>,
+    /// Removed in 0.3.0 (button D is always next photo, and a 3 s hold shows the pairing code); accepted and ignored.
+    #[serde(rename = "buttons")]
+    pub legacy_buttons: Option<toml::Table>,
     pub sensor: Sensor,
     pub matter: Matter,
 }
@@ -71,16 +74,6 @@ pub struct Location {
     pub label: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct HomeAssistant {
-    /// Overridden by `INKYFRAME_HA_URL`.
-    pub url: String,
-    pub timeout_seconds: u64,
-}
-
-/// Each button runs one thing: `scene.<name>` or `script.<name>` (called in Home Assistant), or the built-in
-/// `next_photo`. An empty string disables the button.
 /// The Sensirion SCD40 CO2, temperature and humidity sensor on the I2C bus (Adafruit SCD-40 breakout, address 0x62).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -114,21 +107,10 @@ pub struct Matter {
     /// Also show the four panel buttons as Matter push buttons (Generic Switch): taps, double taps and long presses
     /// become events that Home Assistant automations can trigger on.
     pub buttons: bool,
-    /// Names for the four buttons (A to D), shown by controllers; an empty one becomes "Button A" and so on.
-    pub button_labels: [String; 4],
     /// Holding a button this long is a long press.
     pub long_press_ms: u64,
     /// A tap sequence ends when the button has been up this long: Home Assistant sees a single tap this much later.
     pub multi_press_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields, default)]
-pub struct Buttons {
-    pub a: String,
-    pub b: String,
-    pub c: String,
-    pub d: String,
 }
 
 impl Default for Photos {
@@ -159,7 +141,6 @@ impl Default for Matter {
             enabled: false,
             device_name: "InkyGadget".into(),
             buttons: false,
-            button_labels: Default::default(),
             long_press_ms: 500,
             multi_press_ms: 300,
         }
@@ -179,16 +160,6 @@ impl Default for Sensor {
         }
     }
 }
-impl Default for HomeAssistant {
-    fn default() -> Self {
-        HomeAssistant { url: "http://homeassistant:8123".into(), timeout_seconds: 10 }
-    }
-}
-impl Default for Buttons {
-    fn default() -> Self {
-        Buttons { a: String::new(), b: String::new(), c: String::new(), d: "next_photo".into() }
-    }
-}
 
 /// "HH:MM" to minutes since midnight.
 pub fn parse_time(s: &str) -> Result<u32> {
@@ -205,6 +176,9 @@ impl Config {
         let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
         let cfg: Config = toml::from_str(&text).with_context(|| format!("{}", path.display()))?;
         cfg.validate()?;
+        if cfg.legacy_homeassistant.is_some() || cfg.legacy_buttons.is_some() {
+            log::warn!("{}: [homeassistant] and [buttons] were removed in 0.3.0 and are ignored: use [matter] buttons and Home Assistant automations (button D: tap = next photo, hold 3 s = pairing code)", path.display());
+        }
         Ok(cfg)
     }
 
@@ -256,9 +230,6 @@ impl Config {
         if !(200..=5000).contains(&m.long_press_ms) || !(100..=1000).contains(&m.multi_press_ms) {
             bail!("matter.long_press_ms must be 200 to 5000 and matter.multi_press_ms 100 to 1000");
         }
-        if m.button_labels.iter().any(|l| l.len() > 16) {
-            bail!("matter.button_labels must be at most 16 characters each");
-        }
         let sn = &self.sensor;
         if !(0.0..=175.0).contains(&sn.temperature_offset_c) {
             bail!("sensor.temperature_offset_c must be 0 to 175");
@@ -266,22 +237,17 @@ impl Config {
         if sn.thresholds_ppm[0] == 0 || sn.thresholds_ppm.windows(2).any(|w| w[0] >= w[1]) {
             bail!("sensor.thresholds_ppm must be five increasing, positive numbers");
         }
-        for (name, v) in [("a", &self.buttons.a), ("b", &self.buttons.b), ("c", &self.buttons.c), ("d", &self.buttons.d)] {
-            if !v.is_empty() && v != "next_photo" && v != "matter_pairing" && !(v.starts_with("scene.") || v.starts_with("script.")) {
-                bail!("buttons.{name} must be a scene.* or script.* entity, \"next_photo\", \"matter_pairing\", or empty");
-            }
-        }
         Ok(())
     }
 
-    /// Which panel buttons (A to D) are shown to Matter controllers as push buttons: all of them except the ones that
-    /// have a built-in action here (`next_photo`, `matter_pairing`), which Home Assistant has no use for.
+    /// Which panel buttons (A to D) are shown to Matter controllers as push buttons: A to C. Button D is the frame's own:
+    /// a tap shows the next photo, and holding it for 3 seconds shows the pairing code.
     pub fn matter_buttons(&self) -> [bool; 4] {
-        if !(self.matter.enabled && self.matter.buttons) {
-            return [false; 4];
+        if self.matter.enabled && self.matter.buttons {
+            [true, true, true, false]
+        } else {
+            [false; 4]
         }
-        let b = &self.buttons;
-        [&b.a, &b.b, &b.c, &b.d].map(|t| t != "next_photo" && t != "matter_pairing")
     }
 
     pub fn bar_rgb(&self) -> [u8; 3] {
@@ -313,9 +279,6 @@ mod tests {
         assert!(c.validate().is_err());
         let mut c = Config::default();
         c.photos.refresh_times = vec!["25:00".into()];
-        assert!(c.validate().is_err());
-        let mut c = Config::default();
-        c.buttons.a = "light.turn_on".into();
         assert!(c.validate().is_err());
         let mut c = Config::default();
         c.photos.refresh_times.clear();
@@ -363,24 +326,26 @@ mod tests {
         c.matter.long_press_ms = 50;
         assert!(c.validate().is_err());
         c.matter.long_press_ms = 500;
-        c.matter.button_labels[2] = "x".repeat(17);
+        c.matter.multi_press_ms = 5000;
         assert!(c.validate().is_err());
-        let c: Config = toml::from_str("[matter]\nbutton_labels = [\"Movie\", \"\", \"\", \"Next\"]").unwrap();
-        assert_eq!(c.matter.button_labels[0], "Movie");
+        assert!(toml::from_str::<Config>("[matter]\nbutton_labels = []").is_err(), "labels are fixed now");
     }
 
     #[test]
-    fn matter_shows_the_buttons_that_have_no_built_in_action() {
+    fn matter_shows_buttons_a_to_c_and_keeps_d_for_the_frame() {
         let mut c = Config::default();
         assert_eq!(c.matter_buttons(), [false; 4], "off by default");
         c.matter.enabled = true;
         c.matter.buttons = true;
-        assert_eq!(c.matter_buttons(), [true, true, true, false], "D is next_photo by default");
-        c.buttons.b = "matter_pairing".into();
-        c.buttons.d = String::new();
-        assert_eq!(c.matter_buttons(), [true, false, true, true]);
-        c.buttons.a = "scene.movie".into();
-        assert!(c.matter_buttons()[0], "a Home Assistant scene on a button does not hide it");
+        assert_eq!(c.matter_buttons(), [true, true, true, false]);
+    }
+
+    #[test]
+    fn an_old_config_with_home_assistant_buttons_still_loads() {
+        let old = "[homeassistant]\nurl = \"http://ha:8123\"\n[buttons]\na = \"scene.movie_night\"\nd = \"next_photo\"\n";
+        let c: Config = toml::from_str(old).unwrap();
+        c.validate().unwrap();
+        assert!(c.legacy_homeassistant.is_some() && c.legacy_buttons.is_some());
     }
 
     #[test]

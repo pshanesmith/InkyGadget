@@ -1,8 +1,6 @@
 //! The four buttons on the side of the Inky Impression, A at the top.
 
 use crate::app::Event;
-use crate::config::Config;
-use crate::ha;
 use crate::switchlogic::{SwitchEvent, SwitchLogic, Timing};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -40,57 +38,8 @@ impl Button {
     }
 }
 
-pub struct Actions {
-    cfg: Config,
-    url: String,
-    token: Option<String>,
-    tx: Sender<Event>,
-}
-
-impl Actions {
-    pub fn new(cfg: &Config, tx: Sender<Event>) -> Self {
-        let url = std::env::var(ha::URL_ENV).ok().filter(|u| !u.is_empty()).unwrap_or_else(|| cfg.homeassistant.url.clone());
-        let token = std::env::var(ha::TOKEN_ENV).ok().filter(|t| !t.is_empty());
-        Actions { cfg: cfg.clone(), url, token, tx }
-    }
-
-    /// What the button is set to do ("" for nothing).
-    pub fn target(&self, b: Button) -> &str {
-        match b {
-            Button::A => &self.cfg.buttons.a,
-            Button::B => &self.cfg.buttons.b,
-            Button::C => &self.cfg.buttons.c,
-            Button::D => &self.cfg.buttons.d,
-        }
-    }
-
-    /// Handle one press. Home Assistant calls run on their own thread so a slow network never blocks the buttons
-    /// or the display.
-    pub fn press(&self, b: Button) {
-        let target = self.target(b).to_string();
-        log::info!("button {b:?} pressed ({})", if target.is_empty() { "unassigned" } else { &target });
-        match target.as_str() {
-            "" => {}
-            "next_photo" => {
-                let _ = self.tx.send(Event::Next);
-            }
-            "matter_pairing" => {
-                let _ = self.tx.send(Event::PairButton);
-            }
-            entity => {
-                let Some(token) = self.token.clone() else {
-                    log::error!("{} is not set, so {entity} cannot be called", ha::TOKEN_ENV);
-                    return;
-                };
-                let (url, entity, timeout) = (self.url.clone(), entity.to_string(), Duration::from_secs(self.cfg.homeassistant.timeout_seconds));
-                std::thread::spawn(move || match ha::activate_with_retry(&url, &token, &entity, timeout) {
-                    Ok(()) => log::info!("{entity}: done"),
-                    Err(e) => log::error!("{entity}: {e:#}"),
-                });
-            }
-        }
-    }
-}
+/// Holding button D this long shows the Matter pairing code (and reopens the pairing window).
+pub const PAIR_HOLD_MS: u64 = 3000;
 
 /// Where the Matter node takes button events from.
 pub trait SwitchSink: Send + Sync {
@@ -98,25 +47,31 @@ pub trait SwitchSink: Send + Sync {
     fn send(&self, button: Button, event: SwitchEvent, down: bool);
 }
 
-/// Everything that happens when a button goes down or up: its action, and (with Matter buttons on) the Switch events.
+/// Everything that happens when a button goes down or up.
+///
+/// Button D is the frame's own: a tap shows the next photo (on release, so that a long hold does not), and holding it for
+/// [`PAIR_HOLD_MS`] shows the Matter pairing code instead. The other buttons exist for Home Assistant: with Matter buttons on,
+/// they report taps, double taps and long presses to the Matter node.
 pub struct Hub {
-    actions: Actions,
+    tx: Sender<Event>,
     logics: [SwitchLogic; 4],
     sink: Option<Arc<dyn SwitchSink>>,
-    /// Which buttons report to Matter (the others only run their own action).
+    /// Which buttons report to Matter.
     exposed: [bool; 4],
+    /// When button D went down, while it is down and nothing has happened yet.
+    d_down: Option<u64>,
+    d_held_long: bool,
     start: Instant,
 }
 
 impl Hub {
-    /// `matter` is the timing, the sink and the buttons that report to Matter, or `None` when none do. A button always
-    /// runs its own action (`[buttons]`) on a press.
-    pub fn new(actions: Actions, matter: Option<(Timing, Arc<dyn SwitchSink>, [bool; 4])>) -> Hub {
+    /// `matter` is the timing, the sink and the buttons that report to Matter, or `None` when none do.
+    pub fn new(tx: Sender<Event>, matter: Option<(Timing, Arc<dyn SwitchSink>, [bool; 4])>) -> Hub {
         let (timing, sink, exposed) = match matter {
             Some((t, s, e)) => (t, Some(s), e),
             None => (Timing::default(), None, [false; 4]),
         };
-        Hub { actions, logics: std::array::from_fn(|_| SwitchLogic::new(timing)), sink, exposed, start: Instant::now() }
+        Hub { tx, logics: std::array::from_fn(|_| SwitchLogic::new(timing)), sink, exposed, d_down: None, d_held_long: false, start: Instant::now() }
     }
 
     fn now(&self) -> u64 {
@@ -133,7 +88,15 @@ impl Hub {
         // Close any tap sequence whose time has run out before this edge starts a new one.
         self.tick_at(now);
         if pressed {
-            self.actions.press(b);
+            log::info!("button {b:?} pressed");
+        }
+        if b == Button::D {
+            if pressed {
+                self.d_down = Some(now);
+                self.d_held_long = false;
+            } else if self.d_down.take().is_some() && !self.d_held_long {
+                let _ = self.tx.send(Event::Next);
+            }
         }
         if let Some(sink) = self.sink.as_ref().filter(|_| self.exposed[b.index()]) {
             let logic = &mut self.logics[b.index()];
@@ -145,13 +108,20 @@ impl Hub {
         }
     }
 
-    /// Time has passed: long presses and the ends of tap sequences are due.
+    /// Time has passed: a long hold of D, long presses and the ends of tap sequences are due.
     pub fn tick(&mut self) {
         let now = self.now();
         self.tick_at(now);
     }
 
     pub fn tick_at(&mut self, now: u64) {
+        if let Some(at) = self.d_down {
+            if !self.d_held_long && now.saturating_sub(at) >= PAIR_HOLD_MS {
+                self.d_held_long = true;
+                log::info!("button D held: showing the Matter pairing code");
+                let _ = self.tx.send(Event::PairButton);
+            }
+        }
         let Some(sink) = &self.sink else { return };
         for b in [Button::A, Button::B, Button::C, Button::D].into_iter().filter(|b| self.exposed[b.index()]) {
             let logic = &mut self.logics[b.index()];
@@ -166,7 +136,8 @@ impl Hub {
     /// How long until `tick` has something to do (`None` while nothing is pending).
     pub fn timeout(&self) -> Option<Duration> {
         let now = self.now();
-        self.logics.iter().filter_map(SwitchLogic::next_deadline).min().map(|d| Duration::from_millis(d.saturating_sub(now)))
+        let hold = self.d_down.filter(|_| !self.d_held_long).map(|at| at + PAIR_HOLD_MS);
+        self.logics.iter().filter_map(SwitchLogic::next_deadline).chain(hold).min().map(|d| Duration::from_millis(d.saturating_sub(now)))
     }
 }
 
@@ -209,7 +180,7 @@ fn first_bcm_chip() -> std::path::PathBuf {
 }
 
 /// Development stand-in for the buttons. Type a letter and Enter: `a` taps button A, `a2` double-taps it, `a~` holds it
-/// for a long press, `a+` presses and `a-` releases it.
+/// for a long press, `a!` holds it for 3.3 s (long enough for the pairing code on D), `a+` presses and `a-` releases it.
 pub fn watch_stdin(mut hub: Hub) {
     use std::io::BufRead;
     use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -242,7 +213,7 @@ pub fn watch_stdin(mut hub: Hub) {
         let mut chars = line.chars();
         let Some(b) = chars.next().and_then(Button::from_char) else {
             if !line.is_empty() {
-                eprintln!("type a, b, c or d, then nothing (tap), 2 (double tap), ~ (long hold), + (press) or - (release)");
+                eprintln!("type a, b, c or d, then nothing (tap), 2 (double tap), ~ (long hold), ! (3 s hold), + (press) or - (release)");
             }
             continue;
         };
@@ -263,6 +234,11 @@ pub fn watch_stdin(mut hub: Hub) {
                 wait(&mut hub, 800);
                 hub.edge(b, false);
             }
+            Some('!') => {
+                hub.edge(b, true);
+                wait(&mut hub, PAIR_HOLD_MS + 300);
+                hub.edge(b, false);
+            }
             Some('+') => hub.edge(b, true),
             Some('-') => hub.edge(b, false),
             Some(_) => eprintln!("unknown suffix"),
@@ -275,14 +251,6 @@ mod tests {
     use super::*;
     use std::sync::mpsc::channel;
 
-    #[test]
-    fn pins_map_top_to_bottom() {
-        assert_eq!(Button::from_pin(5), Some(Button::A));
-        assert_eq!(Button::from_pin(24), Some(Button::D));
-        assert_eq!(Button::from_pin(7), None);
-        assert_eq!(Button::from_char('C'), Some(Button::C));
-    }
-
     /// Collects what the Matter buttons would send.
     #[derive(Default)]
     struct Collect(std::sync::Mutex<Vec<(Button, SwitchEvent)>>);
@@ -293,31 +261,70 @@ mod tests {
         }
     }
 
-    #[test]
-    fn only_the_exposed_buttons_report_to_matter_but_every_button_keeps_its_action() {
+    fn hub() -> (Hub, std::sync::mpsc::Receiver<Event>, Arc<Collect>) {
         let (tx, rx) = channel();
         let sink = Arc::new(Collect::default());
-        let cfg = Config::default(); // D is next_photo
-        let mut hub = Hub::new(Actions::new(&cfg, tx), Some((Timing::default(), sink.clone(), [true, true, true, false])));
-        hub.edge_at(Button::D, true, 0);
-        hub.edge_at(Button::D, false, 80);
-        hub.tick_at(1000);
-        assert!(matches!(rx.try_recv(), Ok(Event::Next)), "next_photo still runs");
-        assert!(sink.0.lock().unwrap().is_empty(), "and D sends nothing to Matter");
-        hub.edge_at(Button::C, true, 2000);
-        hub.edge_at(Button::C, false, 2080);
-        hub.tick_at(3000);
-        let got: Vec<_> = sink.0.lock().unwrap().iter().map(|(b, e)| (*b, *e)).collect();
-        assert_eq!(got, [(Button::C, SwitchEvent::InitialPress), (Button::C, SwitchEvent::ShortRelease), (Button::C, SwitchEvent::MultiPressComplete(1))]);
+        (Hub::new(tx, Some((Timing::default(), sink.clone(), [true, true, true, false]))), rx, sink)
     }
 
     #[test]
-    fn next_photo_sends_an_event_and_blank_does_nothing() {
-        let (tx, rx) = channel();
-        let a = Actions::new(&Config::default(), tx);
-        a.press(Button::A);
+    fn pins_map_top_to_bottom() {
+        assert_eq!(Button::from_pin(5), Some(Button::A));
+        assert_eq!(Button::from_pin(24), Some(Button::D));
+        assert_eq!(Button::from_pin(7), None);
+        assert_eq!(Button::from_char('C'), Some(Button::C));
+    }
+
+    #[test]
+    fn a_tap_on_d_shows_the_next_photo_when_it_is_released() {
+        let (mut h, rx, sink) = hub();
+        h.edge_at(Button::D, true, 0);
+        assert!(rx.try_recv().is_err(), "nothing yet: a hold might be coming");
+        h.edge_at(Button::D, false, 80);
+        assert!(matches!(rx.try_recv(), Ok(Event::Next)));
         assert!(rx.try_recv().is_err());
-        a.press(Button::D);
+        assert!(sink.0.lock().unwrap().is_empty(), "D is not a Matter button");
+    }
+
+    #[test]
+    fn holding_d_for_three_seconds_asks_for_the_pairing_code_and_not_a_new_photo() {
+        let (mut h, rx, _) = hub();
+        h.edge_at(Button::D, true, 0);
+        h.tick_at(2900);
+        assert!(rx.try_recv().is_err());
+        assert!(h.timeout().is_some(), "the loop wakes for the hold");
+        h.tick_at(3000);
+        assert!(matches!(rx.try_recv(), Ok(Event::PairButton)));
+        h.tick_at(9000);
+        assert!(rx.try_recv().is_err(), "once per hold");
+        h.edge_at(Button::D, false, 9500);
+        assert!(rx.try_recv().is_err(), "and the release is not a tap");
+        h.edge_at(Button::D, true, 10_000);
+        h.edge_at(Button::D, false, 10_080);
+        assert!(matches!(rx.try_recv(), Ok(Event::Next)), "the next tap works again");
+    }
+
+    #[test]
+    fn buttons_a_to_c_report_to_matter_and_do_nothing_else() {
+        let (mut h, rx, sink) = hub();
+        h.edge_at(Button::C, true, 2000);
+        h.edge_at(Button::C, false, 2080);
+        h.tick_at(3000);
+        let got: Vec<_> = sink.0.lock().unwrap().iter().map(|(b, e)| (*b, *e)).collect();
+        assert_eq!(got, [(Button::C, SwitchEvent::InitialPress), (Button::C, SwitchEvent::ShortRelease), (Button::C, SwitchEvent::MultiPressComplete(1))]);
+        assert!(rx.try_recv().is_err(), "no photo change, no pairing");
+    }
+
+    #[test]
+    fn without_matter_buttons_only_d_does_anything() {
+        let (tx, rx) = channel();
+        let mut h = Hub::new(tx, None);
+        h.edge_at(Button::A, true, 0);
+        h.edge_at(Button::A, false, 50);
+        h.tick_at(1000);
+        assert!(rx.try_recv().is_err());
+        h.edge_at(Button::D, true, 2000);
+        h.edge_at(Button::D, false, 2050);
         assert!(matches!(rx.try_recv(), Ok(Event::Next)));
     }
 }

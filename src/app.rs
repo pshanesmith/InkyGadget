@@ -194,11 +194,11 @@ impl App {
 
     fn on_pair_button(&mut self) {
         let Some(code) = &self.pairing else {
-            log::info!("pairing button ignored: Matter is not switched on");
+            log::info!("pairing request ignored: Matter is not switched on");
             return;
         };
         if self.paired == Some(true) {
-            log::info!("pairing button ignored: already paired (to add another app, use its own \"pairing mode\" option)");
+            log::info!("pairing request ignored: already paired (to add another app, use its own \"pairing mode\" option)");
             return;
         }
         if let Some(tx) = &self.matter_cmds {
