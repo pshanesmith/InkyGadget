@@ -17,7 +17,7 @@ jobs:
       - run: cargo install cargo-zigbuild --locked
       - name: tag matches Cargo.toml
         run: test "v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)" = "${GITHUB_REF_NAME}"
-      - run: cargo test --locked
+      - run: cargo test --locked --features matter
       - run: tools/cross-build.sh
       - run: tools/package-release.sh
       - uses: softprops/action-gh-release@v2

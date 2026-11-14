@@ -1,16 +1,27 @@
 name: ci
-on: [push, pull_request]
+# A PR runs once (not once for the push and once for the pull request); main runs on every push to it. Changes that only
+# touch documentation skip the run, and a newer push to the same branch cancels the run still going.
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'LICENSE', 'NOTICE']
+  pull_request:
+    paths-ignore: ['**.md', 'LICENSE', 'NOTICE']
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --locked
+      # All the tests, the Matter node's included (the feature only adds code, so this covers the plain build's tests too;
+      # the plain build itself is compiled by the first clippy run below).
+      - run: cargo test --locked --features matter
       - run: cargo clippy --locked --all-targets -- -D warnings
       # The Pi build: the SPI/GPIO driver and the button reader only compile on Linux with this feature.
       - run: cargo clippy --locked --all-targets --features hardware -- -D warnings
-      # The Matter node (rs-matter) is a feature: check it too.
       - run: cargo clippy --locked --all-targets --features matter -- -D warnings
       - name: shell syntax
         run: for f in install.sh setup/*.sh setup/lib/*.sh tools/*.sh; do bash -n "$f"; done
