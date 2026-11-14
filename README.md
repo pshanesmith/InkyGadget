@@ -58,8 +58,9 @@ One program (`inkyframe`, plain threads, no async runtime) runs as a single syst
 | | |
 |---|---|
 | Installed packages | 640 on the stock image, 534 after `01-pi-setup.sh` and `02-inky-setup.sh` (Samba adds 11) |
-| RAM | 426 MB usable; about 140 MB in use on the whole system with everything running, of which the service itself is about 5 MB |
-| Panel refresh | about 32 s |
+| RAM | 426 MB usable; about 140 MB in use on the whole system with everything running, of which the service itself is about 5 MB (the Matter node adds about 4 MB) |
+| Panel refresh | about 32 s (the pairing screen too) |
+| Binary | 5.6 MB with the Matter node (3.7 MB without) |
 | HEIC decode, 12 MP iPhone photo | 17 to 25 s once per photo, in the background, about 10 MB peak |
 | Decoding a 24 MP HEIC the old whole-image way | about 30 s and 218 MB (what streaming replaced) |
 
