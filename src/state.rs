@@ -16,6 +16,9 @@ pub struct State {
     pub last_refresh: Option<i64>,
     /// The panel shows the welcome screen.
     pub welcome: bool,
+    /// The panel shows the Matter pairing screen for this QR text (so a restart does not redraw the same screen).
+    #[serde(default)]
+    pub pairing_shown: Option<String>,
 }
 
 impl State {
@@ -106,7 +109,7 @@ mod tests {
     fn state_round_trip_and_corruption() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(State::load(dir.path()), State::default());
-        let s = State { current: Some("a".into()), played: vec!["a".into()], last_refresh: Some(5), welcome: false };
+        let s = State { current: Some("a".into()), played: vec!["a".into()], last_refresh: Some(5), welcome: false, pairing_shown: None };
         s.save(dir.path()).unwrap();
         assert_eq!(State::load(dir.path()), s);
         std::fs::write(State::path(dir.path()), "{ not json").unwrap();

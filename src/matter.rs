@@ -13,6 +13,7 @@
 
 use crate::app::Event;
 use crate::config;
+use crate::pairing::{Code, MatterCommand};
 use crate::sensor::{AirQuality, Latest, Reading};
 use anyhow::{Context, Result};
 use core::pin::pin;
@@ -47,7 +48,7 @@ use rs_matter::{clusters, devices, root_endpoint, with, BasicCommData, Matter, M
 use serde::{Deserialize, Serialize};
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 mod mdns;
@@ -113,7 +114,7 @@ impl Pairing {
 
     /// The text of the QR code (`MT:...`), the grouped manual pairing code (`XXXX-XXX-XXXX`), and the QR code's modules
     /// (row by row, `true` = dark) with its width, for drawing it on the panel.
-    pub fn onboarding(&self, device: &config::Matter) -> Result<Onboarding> {
+    pub fn onboarding(&self, device: &config::Matter) -> Result<Code> {
         let det = device_details(device, "0");
         let payload: QrPayload<'_, NoOptionalData> = QrPayload::new_from_basic_info(DiscoveryCapabilities::IP, CommFlowType::Standard, self.comm_data(), &det, no_optional_data as _);
         let mut buf = [0u8; 1024];
@@ -123,16 +124,8 @@ impl Pairing {
         let qr = Qr::compute(&text, tmp, out).map_err(|e| anyhow::anyhow!("QR code: {e:?}"))?;
         let size = qr.size() as usize;
         let modules = (0..size).flat_map(|y| (0..size).map(move |x| (x, y))).map(|(x, y)| qr.get_module(x as i32, y as i32)).collect();
-        Ok(Onboarding { qr_text: text, manual_code: self.comm_data().compute_pretty_pairing_code().to_string(), width: size, modules })
+        Ok(Code { qr_text: text, manual_code: self.comm_data().compute_pretty_pairing_code().to_string(), width: size, modules })
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Onboarding {
-    pub qr_text: String,
-    pub manual_code: String,
-    pub width: usize,
-    pub modules: Vec<bool>,
 }
 
 #[cfg(unix)]
@@ -425,8 +418,8 @@ fn data_model<'a>(
 }
 
 /// Run the node until it fails. Blocks; call it on its own thread. `events` gets [`Event::Paired`] whenever the
-/// device gains its first controller or loses its last.
-pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>) -> Result<()> {
+/// device gains its first controller or loses its last; `commands` are what the main loop asks of the node.
+pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>, commands: &Receiver<MatterCommand>) -> Result<()> {
     let dir = store_dir(&cfg.photos.state_dir);
     let pairing = Pairing::load_or_create(&dir)?;
     let serial = serial_number();
@@ -463,7 +456,19 @@ pub fn run(cfg: &config::Config, latest: Latest, events: Sender<Event>) -> Resul
         let mut last = matter.has_fabrics();
         let _ = events.send(Event::Paired(last));
         loop {
-            embassy_time::Timer::after(embassy_time::Duration::from_secs(2)).await;
+            embassy_time::Timer::after(embassy_time::Duration::from_secs(1)).await;
+            while let Ok(cmd) = commands.try_recv() {
+                match cmd {
+                    // Only while nobody is paired: a paired controller opens windows from its own app.
+                    MatterCommand::OpenWindow if !matter.has_fabrics() => {
+                        match matter.open_basic_comm_window(MAX_COMM_WINDOW_TIMEOUT_SECS, &crypto, &()) {
+                            Ok(()) => log::info!("pairing window opened again for 15 minutes"),
+                            Err(e) => log::info!("pairing window not reopened (already open?): {e:?}"),
+                        }
+                    }
+                    MatterCommand::OpenWindow => {}
+                }
+            }
             let now = matter.has_fabrics();
             if now != last {
                 last = now;
@@ -531,6 +536,22 @@ mod tests {
         // The three finder patterns are dark in their corners.
         let at = |x: usize, y: usize| o.modules[y * o.width + x];
         assert!(at(0, 0) && at(o.width - 1, 0) && at(0, o.width - 1), "finder patterns");
+    }
+
+    /// The strongest check short of a phone: draw the whole pairing screen and read the QR code back out of it.
+    #[test]
+    fn the_pairing_screen_can_be_scanned() {
+        use crate::overlay::{DISPLAY_H, DISPLAY_W};
+        let cfg = config::Matter::default();
+        for (passcode, discriminator) in [(20_202_021, 3840), (1, 0), (99_999_998, 4095), (35_791_394, 2048)] {
+            let code = Pairing { passcode, discriminator }.onboarding(&cfg).unwrap();
+            let frame = crate::pairing::render(&code);
+            let mut img = rqrr::PreparedImage::prepare_from_greyscale(DISPLAY_W, DISPLAY_H, |x, y| if frame[y * DISPLAY_W + x] == crate::palette::BLACK { 0 } else { 255 });
+            let grids = img.detect_grids();
+            assert!(!grids.is_empty(), "no QR code found for {passcode}");
+            let (_, text) = grids[0].decode().unwrap_or_else(|e| panic!("cannot decode {passcode}: {e:?}"));
+            assert_eq!(text, code.qr_text, "passcode {passcode}");
+        }
     }
 
     #[test]

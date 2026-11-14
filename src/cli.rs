@@ -15,7 +15,7 @@ inkyframe: bedside photo frame for the Inky Impression 5.7\"
   inkyframe check-config [--config FILE]        check that the config file loads (exit status 1 and the reason if not)
   inkyframe geocode ZIP [--config FILE]         look up a US ZIP code and store the location
   inkyframe ha-discover [--config FILE]         list Home Assistant scenes and scripts (needs INKYFRAME_HA_TOKEN)
-  inkyframe matter qr [--out FILE.png]          the Matter pairing code (QR text, manual code, QR picture)
+  inkyframe matter qr [--out FILE.png] [--panel FILE.png]   the Matter pairing code (QR text, manual code, QR picture, or the whole pairing screen)
   inkyframe matter reset                        forget all Matter controllers and make a new pairing code (stop the service first)
   inkyframe hwtest [--white] [--buttons]        colour bars (or a white screen) on the panel, and watch the buttons
   inkyframe hwtest --sensor [--config FILE]     print the SCD40 readings for a minute (stop the service first)
@@ -107,7 +107,12 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
     let matter_cfg = cfg.clone();
     let mut app = App::new(cfg, panel, rx, tx.clone())?;
     crate::sensor::start(&sensor_cfg, app.air_handle(), app.stop_flag(), emulate.is_some());
-    start_matter(&matter_cfg, app.air_handle(), tx.clone());
+    // The pairing code first: it makes the identity file that the Matter node reads right after, so both agree.
+    let code = pairing_code(&matter_cfg);
+    let matter_cmds = start_matter(&matter_cfg, app.air_handle(), tx.clone());
+    if let Some(code) = code {
+        app.set_pairing(code, matter_cmds);
+    }
     // On SIGTERM/SIGINT: tell long waits (clock, weather) to end, then wake the main loop.
     let stop = app.stop_flag();
     let mut signals = signal_hook::iterator::Signals::new([signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT])?;
@@ -125,25 +130,49 @@ pub fn run(cfg: Config, args: &[String]) -> Result<()> {
 
 /// The Matter node runs on its own thread; if it fails (no network yet, say) it is started again a minute later.
 #[cfg(feature = "matter")]
-fn start_matter(cfg: &Config, latest: crate::sensor::Latest, tx: std::sync::mpsc::Sender<crate::app::Event>) {
+fn start_matter(cfg: &Config, latest: crate::sensor::Latest, tx: std::sync::mpsc::Sender<crate::app::Event>) -> Option<std::sync::mpsc::Sender<crate::pairing::MatterCommand>> {
     if !cfg.matter.enabled {
-        return;
+        return None;
     }
+    let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
     let cfg = cfg.clone();
     std::thread::spawn(move || loop {
-        match crate::matter::run(&cfg, latest.clone(), tx.clone()) {
+        match crate::matter::run(&cfg, latest.clone(), tx.clone(), &cmd_rx) {
             Ok(()) => {}
             Err(e) => log::error!("Matter node stopped: {e:#}; starting it again in a minute"),
         }
         std::thread::sleep(std::time::Duration::from_secs(60));
     });
+    Some(cmd_tx)
 }
 
 #[cfg(not(feature = "matter"))]
-fn start_matter(cfg: &Config, _latest: crate::sensor::Latest, _tx: std::sync::mpsc::Sender<crate::app::Event>) {
+fn start_matter(cfg: &Config, _latest: crate::sensor::Latest, _tx: std::sync::mpsc::Sender<crate::app::Event>) -> Option<std::sync::mpsc::Sender<crate::pairing::MatterCommand>> {
     if cfg.matter.enabled {
         log::error!("[matter] is enabled, but this build has no Matter support (build with --features matter)");
     }
+    None
+}
+
+/// The pairing code for the pairing screen: made (once) and read from the Matter node's state folder.
+#[cfg(feature = "matter")]
+fn pairing_code(cfg: &Config) -> Option<crate::pairing::Code> {
+    if !cfg.matter.enabled {
+        return None;
+    }
+    let dir = crate::matter::store_dir(&cfg.photos.state_dir);
+    match crate::matter::Pairing::load_or_create(&dir).and_then(|p| p.onboarding(&cfg.matter)) {
+        Ok(code) => Some(code),
+        Err(e) => {
+            log::error!("no Matter pairing code, so no pairing screen: {e:#}");
+            None
+        }
+    }
+}
+
+#[cfg(not(feature = "matter"))]
+fn pairing_code(_cfg: &Config) -> Option<crate::pairing::Code> {
+    None
 }
 
 /// `inkyframe matter qr | reset`: the pairing code of this frame, or forget all controllers and make a new code.
@@ -169,6 +198,12 @@ pub fn matter(args: &[String], config_path: &str) -> Result<()> {
                     .collect();
                 println!("{line}");
             }
+            if let Some(out) = opt(args, "--panel") {
+                // The whole pairing screen as the panel would show it.
+                let rgb = crate::render::to_preview_rgb(&crate::pairing::render(&o));
+                image::RgbImage::from_raw(DISPLAY_W as u32, DISPLAY_H as u32, rgb).context("frame size")?.save(out)?;
+                println!("wrote {out}");
+            }
             if let Some(out) = opt(args, "--out") {
                 let scale = 8usize;
                 let side = (o.width + 8) * scale;
@@ -188,7 +223,7 @@ pub fn matter(args: &[String], config_path: &str) -> Result<()> {
             println!("removed {}: all controllers are forgotten and a new pairing code is made at the next start. Remove the frame from your controller app too.", dir.display());
             Ok(())
         }
-        _ => bail!("usage: inkyframe matter qr [--out FILE.png] | inkyframe matter reset (stop the service first)"),
+        _ => bail!("usage: inkyframe matter qr [--out FILE.png] [--panel FILE.png] | inkyframe matter reset (stop the service first)"),
     }
 }
 

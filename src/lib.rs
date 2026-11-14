@@ -12,6 +12,7 @@ pub mod geocode;
 pub mod ha;
 pub mod heic_stream;
 pub mod overlay;
+pub mod pairing;
 pub mod palette;
 pub mod library;
 #[cfg(feature = "matter")]

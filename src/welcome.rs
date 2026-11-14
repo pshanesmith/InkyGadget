@@ -4,7 +4,7 @@ use crate::overlay::{DISPLAY_H, DISPLAY_W};
 use crate::palette::{BLACK, BLUE, WHITE};
 use font8x8::legacy::BASIC_LEGACY;
 
-fn text(buf: &mut [u8], x0: usize, y0: usize, s: &str, scale: usize, colour: u8) {
+pub(crate) fn text(buf: &mut [u8], x0: usize, y0: usize, s: &str, scale: usize, colour: u8) {
     for (n, ch) in s.chars().enumerate() {
         let g = BASIC_LEGACY[(ch as usize).min(127)];
         for (row, bits) in g.iter().enumerate() {
@@ -24,7 +24,7 @@ fn text(buf: &mut [u8], x0: usize, y0: usize, s: &str, scale: usize, colour: u8)
     }
 }
 
-fn centred(buf: &mut [u8], y: usize, s: &str, scale: usize, colour: u8) {
+pub(crate) fn centred(buf: &mut [u8], y: usize, s: &str, scale: usize, colour: u8) {
     let w = s.chars().count() * 8 * scale;
     text(buf, DISPLAY_W.saturating_sub(w) / 2, y, s, scale, colour);
 }

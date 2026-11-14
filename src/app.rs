@@ -5,6 +5,7 @@ use crate::decode::Limits;
 use crate::display::Panel;
 use crate::library::{process_item, Item, Library};
 use crate::overlay::{Overlay, OverlayStyle, PlateStyle};
+use crate::pairing::{self, Code, MatterCommand};
 use crate::render::{render, RenderOptions};
 use crate::schedule;
 use crate::sensor::{self, Latest};
@@ -29,6 +30,8 @@ pub enum Event {
     Processed(String, bool),
     /// The Matter node gained its first controller (`true`) or lost its last (`false`).
     Paired(bool),
+    /// The pairing button was pressed (`matter_pairing`).
+    PairButton,
     Stop,
 }
 
@@ -43,6 +46,8 @@ const PANEL_RETRY: Duration = Duration::from_secs(120);
 const PANEL_RETRIES: u32 = 5;
 /// How often the watchdog is told the main loop is alive (the unit allows 900 s).
 const HEARTBEAT_SECONDS: u64 = 60;
+/// How long start-up waits for the Matter node to report its pairing state.
+const MATTER_WAIT: Duration = Duration::from_secs(20);
 
 pub struct App {
     cfg: Config,
@@ -67,6 +72,11 @@ pub struct App {
     pub progress: Arc<std::sync::atomic::AtomicU64>,
     /// The newest reading from the air sensor (empty if there is none).
     air: Latest,
+    /// The Matter pairing code, when the Matter node is on.
+    pairing: Option<Code>,
+    matter_cmds: Option<Sender<MatterCommand>>,
+    /// Whether the Matter node has a controller (`None` until it says).
+    paired: Option<bool>,
 }
 
 fn epoch_to_local(s: i64) -> Option<DateTime<Local>> {
@@ -133,6 +143,9 @@ impl App {
             stop: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(Default::default()),
             air: Latest::default(),
+            pairing: None,
+            matter_cmds: None,
+            paired: None,
         })
     }
 
@@ -144,6 +157,85 @@ impl App {
     /// Where the sensor thread publishes its readings.
     pub fn air_handle(&self) -> Latest {
         self.air.clone()
+    }
+
+    /// The Matter node's pairing code and the way to talk to it: the pairing screen and the pairing button need them.
+    pub fn set_pairing(&mut self, code: Code, cmds: Option<Sender<MatterCommand>>) {
+        self.pairing = Some(code);
+        self.matter_cmds = cmds;
+    }
+
+    /// Seconds after the last refresh at which a wanted refresh may go ahead. Replacing the welcome screen with the first
+    /// photo, and the pairing screen coming or going, are worth less of a wait: they are a one-off, and the pairing window
+    /// is only open for 15 minutes.
+    fn wanted_gap(&self, why: &str) -> u64 {
+        let min = self.cfg.display.min_refresh_seconds;
+        match why {
+            "first photo" | "pairing" | "paired" => 60.min(min),
+            _ => min,
+        }
+    }
+
+    fn on_paired(&mut self, paired: bool) {
+        log::info!("Matter: {}", if paired { "paired" } else { "not paired" });
+        self.paired = Some(paired);
+        if paired {
+            // The QR code has done its job: bring the photos back.
+            if self.state.pairing_shown.is_some() {
+                self.wanted = Some("paired");
+            }
+        } else if let Some(code) = &self.pairing {
+            // Only draw it if the panel does not already show this very code (the code survives restarts).
+            if self.state.pairing_shown.as_deref() != Some(code.qr_text.as_str()) {
+                self.wanted = Some("pairing");
+            }
+        }
+    }
+
+    fn on_pair_button(&mut self) {
+        let Some(code) = &self.pairing else {
+            log::info!("pairing button ignored: Matter is not switched on");
+            return;
+        };
+        if self.paired == Some(true) {
+            log::info!("pairing button ignored: already paired (to add another app, use its own \"pairing mode\" option)");
+            return;
+        }
+        if let Some(tx) = &self.matter_cmds {
+            let _ = tx.send(MatterCommand::OpenWindow);
+        }
+        if self.state.pairing_shown.as_deref() != Some(code.qr_text.as_str()) {
+            self.wanted = Some("pairing");
+        }
+    }
+
+    /// Draw the pairing screen (QR code and manual code) instead of a photo.
+    fn show_pairing(&mut self) {
+        let Some(code) = self.pairing.clone() else { return };
+        log::info!("showing the Matter pairing screen");
+        match self.panel.show(&pairing::render(&code)) {
+            Ok(()) => {
+                self.panel_failures = 0;
+                self.hold_until = None;
+                self.state.pairing_shown = Some(code.qr_text);
+                self.state.welcome = false;
+                self.state.last_refresh = Some(Local::now().timestamp());
+            }
+            Err(e) => {
+                self.panel_failures += 1;
+                log::error!("panel update failed ({} in a row): {e:#}", self.panel_failures);
+                if self.panel_failures >= PANEL_RETRIES {
+                    self.panel_failures = 0;
+                } else {
+                    self.wanted = Some("pairing");
+                    self.hold_until = Some(Instant::now() + PANEL_RETRY);
+                    return;
+                }
+            }
+        }
+        if let Err(e) = self.state.save(&self.cfg.photos.state_dir) {
+            log::error!("cannot save state: {e:#}");
+        }
     }
 
     fn stopping(&self) -> bool {
@@ -278,6 +370,10 @@ impl App {
 
     /// Show a new photo (or the welcome screen if there is none).
     fn refresh(&mut self, why: &str) {
+        if why == "pairing" {
+            self.show_pairing();
+            return;
+        }
         self.wait_for_clock();
         if self.stopping() {
             return;
@@ -330,6 +426,7 @@ impl App {
                 self.panel_failures = 0;
                 self.hold_until = None;
                 self.state.welcome = shown.is_none();
+                self.state.pairing_shown = None;
                 self.state.current = shown;
                 self.state.last_refresh = Some(Local::now().timestamp());
             }
@@ -379,7 +476,7 @@ impl App {
         let min_ready = ready_after(min);
         let mut wake = if due { min_ready } else { schedule::next_due(now, &self.times, self.cfg.photos.interval_minutes, self.last()).max(min_ready) };
         if let Some(w) = self.wanted {
-            wake = wake.min(ready_after(if w == "first photo" { 60.min(min) } else { min }));
+            wake = wake.min(ready_after(self.wanted_gap(w)));
         }
         if let Some(h) = self.hold_until {
             let left = h.saturating_duration_since(Instant::now());
@@ -391,6 +488,9 @@ impl App {
     pub fn run(&mut self) {
         self.scan();
         crate::sdnotify::notify("READY=1");
+        if !self.wait_for_matter() {
+            return;
+        }
         loop {
             self.beat();
             if self.stopping() {
@@ -400,8 +500,7 @@ impl App {
             let held = self.held();
             // Replacing the welcome screen with the first photo is not worth a long wait: a minute is enough to spare the panel.
             let wanted_gap_ok = match self.wanted {
-                Some("first photo") => self.gap_ok(now, 60.min(self.cfg.display.min_refresh_seconds)),
-                Some(_) => self.min_gap_ok(now),
+                Some(w) => self.gap_ok(now, self.wanted_gap(w)),
                 None => false,
             };
             if !held && wanted_gap_ok {
@@ -418,27 +517,60 @@ impl App {
             let wake = self.next_wake(now, due);
             let wait = (wake - now).to_std().unwrap_or(Duration::from_secs(1)).clamp(Duration::from_secs(1), Duration::from_secs(60));
             match self.rx.recv_timeout(wait) {
-                Ok(Event::Stop) | Err(RecvTimeoutError::Disconnected) => break,
-                Ok(Event::Scan) => self.scan(),
-                Ok(Event::Next) => {
-                    if self.min_gap_ok(Local::now()) {
-                        self.wanted = Some("button");
-                    } else {
-                        log::info!("next photo ignored: the panel was refreshed less than {} s ago", self.cfg.display.min_refresh_seconds);
+                Ok(ev) => {
+                    if !self.handle(ev) {
+                        break;
                     }
                 }
-                Ok(Event::Paired(paired)) => {
-                    log::info!("Matter: {}", if paired { "paired" } else { "not paired" });
-                }
-                Ok(Event::Processed(_, ok)) => {
-                    if ok && self.state.welcome {
-                        self.wanted = Some("first photo");
-                    }
-                }
+                Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => {}
             }
         }
         log::info!("stopping");
+    }
+
+    /// React to one event. `false` means stop.
+    fn handle(&mut self, ev: Event) -> bool {
+        match ev {
+            Event::Stop => return false,
+            Event::Scan => self.scan(),
+            Event::Next => {
+                if self.min_gap_ok(Local::now()) {
+                    self.wanted = Some("button");
+                } else {
+                    log::info!("next photo ignored: the panel was refreshed less than {} s ago", self.cfg.display.min_refresh_seconds);
+                }
+            }
+            Event::Paired(paired) => self.on_paired(paired),
+            Event::PairButton => self.on_pair_button(),
+            Event::Processed(_, ok) => {
+                if ok && self.state.welcome {
+                    self.wanted = Some("first photo");
+                }
+            }
+        }
+        true
+    }
+
+    /// At start-up, give the Matter node a moment to say whether it has a controller, so the pairing screen replaces the
+    /// first refresh instead of following it a minute later (two 30 s flashes). `false` means stop.
+    fn wait_for_matter(&mut self) -> bool {
+        if self.pairing.is_none() {
+            return true;
+        }
+        let end = Instant::now() + MATTER_WAIT;
+        while self.paired.is_none() && Instant::now() < end && !self.stopping() {
+            match self.rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(ev) => {
+                    if !self.handle(ev) {
+                        return false;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+        true
     }
 }
 
@@ -659,6 +791,113 @@ mod tests {
         assert!(format_date(now, "%A %B %-d").is_some());
         assert_eq!(format_date(now, "%Q"), None);
         assert_eq!(format_date(now, "%"), None);
+    }
+
+    fn test_code() -> Code {
+        Code { qr_text: "MT:TESTCODE".into(), manual_code: "2310-483-8485".into(), width: 29, modules: vec![true; 29 * 29] }
+    }
+
+    #[test]
+    fn the_pairing_screen_is_drawn_once_per_code() {
+        let mut r = rig(1);
+        r.app.set_pairing(test_code(), None);
+        r.app.on_paired(false);
+        assert_eq!(r.app.wanted, Some("pairing"));
+        r.app.wanted = None;
+        r.app.refresh("pairing");
+        assert_eq!(*r.shown.lock().unwrap(), 1);
+        assert_eq!(r.app.state.pairing_shown.as_deref(), Some("MT:TESTCODE"));
+        assert!(r.app.state.last_refresh.is_some());
+        r.app.on_paired(false); // the node says it again (a restart): the same code is already on the panel
+        assert_eq!(r.app.wanted, None);
+    }
+
+    #[test]
+    fn the_qr_code_gives_way_to_a_photo_once_paired() {
+        let mut r = rig(2);
+        r.app.set_pairing(test_code(), None);
+        r.app.on_paired(false);
+        r.app.refresh("pairing");
+        r.app.on_paired(true);
+        assert_eq!(r.app.wanted, Some("paired"));
+        r.app.refresh("paired");
+        assert_eq!(*r.shown.lock().unwrap(), 2);
+        assert_eq!(r.app.state.pairing_shown, None);
+        assert!(r.app.state.current.is_some(), "a photo is back");
+        r.app.on_paired(true); // already showing a photo: nothing more to draw
+        assert_eq!(r.app.wanted, Some("paired"), "wanted was not cleared by the test, and nothing new was added");
+        r.app.wanted = None;
+        r.app.on_paired(true);
+        assert_eq!(r.app.wanted, None);
+    }
+
+    #[test]
+    fn without_matter_nothing_is_drawn_for_pairing() {
+        let mut r = rig(1);
+        r.app.on_paired(false);
+        assert_eq!(r.app.wanted, None);
+        r.app.on_pair_button();
+        assert_eq!(r.app.wanted, None);
+    }
+
+    #[test]
+    fn the_pairing_button_reopens_the_window_only_while_unpaired() {
+        let mut r = rig(1);
+        let (tx, rx) = channel();
+        r.app.set_pairing(test_code(), Some(tx));
+        r.app.on_paired(false);
+        r.app.wanted = None;
+        r.app.state.pairing_shown = None; // the panel shows a photo
+        r.app.on_pair_button();
+        assert_eq!(rx.try_recv(), Ok(MatterCommand::OpenWindow));
+        assert_eq!(r.app.wanted, Some("pairing"), "the QR code is drawn again");
+        r.app.wanted = None;
+        r.app.state.pairing_shown = Some("MT:TESTCODE".into());
+        r.app.on_pair_button();
+        assert_eq!(rx.try_recv(), Ok(MatterCommand::OpenWindow), "the window is reopened even if the code is already shown");
+        assert_eq!(r.app.wanted, None, "but the panel is not redrawn");
+        r.app.on_paired(true);
+        r.app.on_pair_button();
+        assert!(rx.try_recv().is_err(), "once paired, the button does nothing");
+    }
+
+    #[test]
+    fn start_up_waits_for_the_matter_node_before_the_first_refresh() {
+        let mut r = rig(1);
+        r.app.set_pairing(test_code(), None);
+        r.app.tx.send(Event::Paired(false)).unwrap();
+        let t = Instant::now();
+        assert!(r.app.wait_for_matter());
+        assert!(t.elapsed() < Duration::from_secs(5), "it did not wait the whole time");
+        assert_eq!(r.app.wanted, Some("pairing"), "the pairing screen is what the first refresh draws");
+        // Without Matter there is nothing to wait for.
+        let mut r = rig(1);
+        let t = Instant::now();
+        assert!(r.app.wait_for_matter() && t.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn the_pairing_screen_waits_less_than_the_normal_gap() {
+        let r = rig(0);
+        assert_eq!(r.app.wanted_gap("pairing"), 60);
+        assert_eq!(r.app.wanted_gap("paired"), 60);
+        assert_eq!(r.app.wanted_gap("button"), r.app.cfg.display.min_refresh_seconds);
+    }
+
+    #[test]
+    fn a_failed_update_retries_the_pairing_screen() {
+        let mut r = rig(1);
+        r.app.set_pairing(test_code(), None);
+        *r.fail.lock().unwrap() = 1;
+        r.app.refresh("pairing");
+        assert_eq!(r.app.state.pairing_shown, None);
+        assert_eq!(r.app.wanted, Some("pairing"));
+        assert!(r.app.held());
+        r.app.hold_until = None;
+        r.app.wanted = None;
+        r.app.refresh("pairing");
+        assert_eq!(*r.shown.lock().unwrap(), 1);
+        assert!(r.app.state.pairing_shown.is_some());
     }
 
     #[test]

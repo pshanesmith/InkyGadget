@@ -241,8 +241,8 @@ impl Config {
             bail!("sensor.thresholds_ppm must be five increasing, positive numbers");
         }
         for (name, v) in [("a", &self.buttons.a), ("b", &self.buttons.b), ("c", &self.buttons.c), ("d", &self.buttons.d)] {
-            if !v.is_empty() && v != "next_photo" && !(v.starts_with("scene.") || v.starts_with("script.")) {
-                bail!("buttons.{name} must be a scene.* or script.* entity, \"next_photo\", or empty");
+            if !v.is_empty() && v != "next_photo" && v != "matter_pairing" && !(v.starts_with("scene.") || v.starts_with("script.")) {
+                bail!("buttons.{name} must be a scene.* or script.* entity, \"next_photo\", \"matter_pairing\", or empty");
             }
         }
         Ok(())
