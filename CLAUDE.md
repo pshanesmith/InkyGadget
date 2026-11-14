@@ -32,6 +32,12 @@ See README.md (use, how it works, measurements). Sibling project with the same d
   Pi's armhf repo has ARMv6 builds, but needs more packages and was not needed). Never hold a full-size image on the Pi.
 - **The panel** should refresh no more often than every few minutes and at least once a day (Pimoroni); `min_refresh_seconds`
   enforces the floor, also for button D. No deep sleep after power-off (`DSLP`): unmeasurable gain, unverifiable without the panel.
+- **Air sensor** (`src/sensor.rs`): SCD40 via `sensirion-scd4x`, a port of Adafruit's MIT CircuitPython driver, in the sibling repo
+  `pshanesmith/scd4x-rust` (a git dependency on tag v0.1.0; for driver work, temporarily point it at a local path
+  `../scd4x-rust`). The sensor keeps measuring across a restart, so `init` always stops it first. The service must not run
+  while `hwtest --sensor` does. I2C needs `dtparam=i2c_arm=on`, the `i2c-dev` module and the `i2c` group (all in the setup script
+  and unit). Plan: expose it as a Matter Air Quality Sensor (rs-matter), pairing QR on the panel; see the plan in the session
+  notes if it is still there, else the README.
 - **systemd unit**: do not add `PrivateDevices`, `DevicePolicy` or `ProtectClock` (each turns the device list into an allow-list that
   excludes `/dev/spidev0.0` and `/dev/gpiochip0`; the service reaches them through the `spi` and `gpio` groups). `MemoryHigh`
   does nothing if the kernel's memory cgroup is off. The unit has no OOM bonus on purpose: it is the biggest process, so it

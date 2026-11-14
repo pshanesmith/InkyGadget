@@ -8,6 +8,7 @@ if [[ -f /var/lib/inkyframe/state.json ]]; then
   [[ -n $last ]] && echo "refresh:  last $(date -d "@$last" '+%F %T') ($(( ($(date +%s) - last) / 3600 )) h ago)"
 fi
 echo "photos:   $(find /srv/inkyframe/Images -type f 2>/dev/null | wc -l) files, $(ls /var/lib/inkyframe/cache 2>/dev/null | grep -c '\.jpg$') prepared"
+if [[ -e /dev/i2c-1 ]]; then echo "sensor:   $(journalctl -u inkyframe --no-pager -n 300 -o cat 2>/dev/null | grep -E 'sensor (ready|not available)' | tail -1 | cut -c1-120)"; fi
 echo "memory:   $(free -m | awk '/Mem:/{print $7 " MB available of " $2}')"
 echo "disk:     $(df -h --output=avail / | tail -1 | tr -d ' ') free"
 command -v vcgencmd >/dev/null && echo "pi:       $(vcgencmd measure_temp) $(vcgencmd get_throttled)"

@@ -7,6 +7,7 @@ use crate::library::{process_item, Item, Library};
 use crate::overlay::{Overlay, OverlayStyle, PlateStyle};
 use crate::render::{render, RenderOptions};
 use crate::schedule;
+use crate::sensor::{self, Latest};
 use crate::state::{pick, State};
 use crate::weather::{self, Forecast};
 use crate::welcome;
@@ -62,6 +63,8 @@ pub struct App {
     /// Set by the signal handler: long waits end early so the service stops promptly.
     stop: Arc<AtomicBool>,
     pub progress: Arc<std::sync::atomic::AtomicU64>,
+    /// The newest reading from the air sensor (empty if there is none).
+    air: Latest,
 }
 
 fn epoch_to_local(s: i64) -> Option<DateTime<Local>> {
@@ -127,12 +130,18 @@ impl App {
             last_scan: None,
             stop: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(Default::default()),
+            air: Latest::default(),
         })
     }
 
     /// Flag that ends long waits early; the signal handler sets it before it sends `Event::Stop`.
     pub fn stop_flag(&self) -> Arc<AtomicBool> {
         self.stop.clone()
+    }
+
+    /// Where the sensor thread publishes its readings.
+    pub fn air_handle(&self) -> Latest {
+        self.air.clone()
     }
 
     fn stopping(&self) -> bool {
@@ -256,7 +265,13 @@ impl App {
         let right = self.forecast(now.date_naive()).map(|f| weather::overlay_text(&f));
         // Without a clock set from the network the date would be wrong, so it is left off.
         let left = if clock_is_set() { format_date(now, &self.cfg.overlay.date_format) } else { None };
-        Overlay { left, right }
+        // The room's air is only as fresh as the last reading; a refresh never waits for the sensor.
+        let bottom = if self.cfg.overlay.show_air && self.cfg.sensor.enabled {
+            self.air.get(sensor::max_age(&self.cfg.sensor)).map(|r| sensor::overlay_text(&r, self.cfg.overlay.units == "fahrenheit"))
+        } else {
+            None
+        };
+        Overlay { left, right, bottom }
     }
 
     /// Show a new photo (or the welcome screen if there is none).

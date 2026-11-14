@@ -3,7 +3,8 @@
 A photo frame: a Raspberry Pi Zero W and a Pimoroni Inky Impression 5.7" (600x448, 7-colour e-paper),
 written in Rust. Drop your photos (JPEG, PNG or iPhone HEIC) into a network folder; the frame shows one a
 day with the day and date at the top left and today's high and low at the top right. Three of the four buttons
-on the side run Home Assistant scenes or scripts, and the fourth shows the next photo.
+on the side run Home Assistant scenes or scripts, and the fourth shows the next photo. An optional Sensirion SCD40
+CO2 sensor adds the room's CO2, temperature and humidity in the bottom-left corner.
 
 - **Photos** arrive over an SMB share (`smb://inky.local/Images`), like the
   [inky-photo-frame](https://github.com/mehdi7129/inky-photo-frame) project. HEIC is decoded in pure Rust
@@ -40,6 +41,12 @@ One program (`inkyframe`, plain threads, no async runtime) runs as a single syst
   mirror, an unusual colour matrix) use the whole-image decoder, which needs about 220 MB for 24 MP, and
   `max_pixels` (default 25 MP) keeps JPEG, PNG and that fallback within the board's memory. JPEG and PNG use the
   `image` crate; their EXIF rotation is applied after shrinking.
+- **Air sensor (optional).** A Sensirion SCD40 (the Adafruit SCD-40 breakout) on the I2C pins. One thread reads it every
+  5 s (or 30 s with `low_power`) through the `sensirion-scd4x` driver ([scd4x-rust](https://github.com/pshanesmith/scd4x-rust)) and keeps the newest reading; a
+  refresh draws it as `CO2 612 ppm  72°  41%` bottom left and never waits for it or refreshes because of it. A reading
+  older than three samples is dropped, and a missing or silent sensor is logged once and reopened every minute. The
+  settings (temperature offset, altitude or pressure, self calibration) are sent at every start and never written to the
+  sensor's EEPROM. `inkyframe hwtest --sensor` prints readings (stop the service first).
 - **Buttons.** GPIO edge events call Home Assistant's REST API (`scene.turn_on` or `script.turn_on`) with the token
   from `secrets.env`. A call is tried again only if it never reached Home Assistant, so a toggle cannot run twice.
 
@@ -88,6 +95,15 @@ Add photos by connecting to the share: **macOS** Finder > Go > Connect to Server
 **iPhone/iPad** Files > Browse > ... > Connect to Server; **Windows** `\\inky.local\Images`. User `inkyframe`,
 password in `/etc/inkyframe/share-password` (also on the frame's screen while it is empty). Replace `inky` with
 your Pi's hostname. New photos are picked up within a minute; delete a file to remove it.
+
+### CO2 sensor (optional)
+
+Wire the SCD-40 (STEMMA QT / Qwiic) to the Pi's header: 3V3 (pin 1), SDA (pin 3, GPIO2), SCL (pin 5, GPIO3), GND (pin 9).
+The Inky's own header passes these through; check with `i2cdetect -y 1` that 0x62 answers (the Inky's ID EEPROM at
+0x50 may show too). Mount the sensor away from the Pi and the panel, which warm it: tune `temperature_offset_c`
+against a thermometer. Then set `[sensor] enabled = true`, restart the service and look for "sensor ready" in the log.
+Automatic self calibration expects the sensor to see fresh air (about 400 ppm) now and then; switch it off for a room
+that is never aired.
 
 ### Home Assistant
 

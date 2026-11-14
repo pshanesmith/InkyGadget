@@ -8,7 +8,7 @@ Type=notify
 NotifyAccess=main
 User=inkyframe
 Group=inkyframe
-SupplementaryGroups=spi gpio
+SupplementaryGroups=spi gpio i2c
 # The Home Assistant token (INKYFRAME_HA_TOKEN) comes only from this file (root-owned, mode 0600).
 EnvironmentFile=-/etc/inkyframe/secrets.env
 ExecStart=/opt/inkyframe/bin/inkyframe run --config /etc/inkyframe/config.toml
@@ -41,7 +41,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 CapabilityBoundingSet=
-# The device files (/dev/spidev0.0, /dev/gpiochip0) are reached through the spi and gpio groups. Do not add PrivateDevices,
+# The device files (/dev/spidev0.0, /dev/gpiochip0, /dev/i2c-1) are reached through the spi, gpio and i2c groups. Do not add PrivateDevices,
 # DevicePolicy or ProtectClock: each of them turns the device list into an allow-list that excludes them.
 ReadWritePaths=/var/lib/inkyframe
 # The photos are only read.

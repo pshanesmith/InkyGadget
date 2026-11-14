@@ -18,6 +18,7 @@ pub mod render;
 pub mod scale;
 pub mod sdnotify;
 pub mod schedule;
+pub mod sensor;
 pub mod state;
 pub mod weather;
 pub mod welcome;
