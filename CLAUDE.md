@@ -33,8 +33,8 @@ See README.md (use, how it works, measurements). Sibling project with the same d
 - **The panel** should refresh no more often than every few minutes and at least once a day (Pimoroni); `min_refresh_seconds`
   enforces the floor, also for button D. No deep sleep after power-off (`DSLP`): unmeasurable gain, unverifiable without the panel.
 - **Air sensor** (`src/sensor.rs`): SCD40 via `sensirion-scd4x`, a port of Adafruit's MIT CircuitPython driver, in the sibling repo
-  `../scd4x-rust` (path dependency in `Cargo.toml` until it is pushed; switch to a git tag or crates.io before a release or CI
-  cannot build). The sensor keeps measuring across a restart, so `init` always stops it first. The service must not run
+  `pshanesmith/scd4x-rust` (a git dependency on tag v0.1.0; for driver work, temporarily point it at a local path
+  `../scd4x-rust`). The sensor keeps measuring across a restart, so `init` always stops it first. The service must not run
   while `hwtest --sensor` does. I2C needs `dtparam=i2c_arm=on`, the `i2c-dev` module and the `i2c` group (all in the setup script
   and unit). Plan: expose it as a Matter Air Quality Sensor (rs-matter), pairing QR on the panel; see the plan in the session
   notes if it is still there, else the README.

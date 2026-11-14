@@ -42,7 +42,7 @@ One program (`inkyframe`, plain threads, no async runtime) runs as a single syst
   `max_pixels` (default 25 MP) keeps JPEG, PNG and that fallback within the board's memory. JPEG and PNG use the
   `image` crate; their EXIF rotation is applied after shrinking.
 - **Air sensor (optional).** A Sensirion SCD40 (the Adafruit SCD-40 breakout) on the I2C pins. One thread reads it every
-  5 s (or 30 s with `low_power`) through the `sensirion-scd4x` driver and keeps the newest reading; a
+  5 s (or 30 s with `low_power`) through the `sensirion-scd4x` driver ([scd4x-rust](https://github.com/pshanesmith/scd4x-rust)) and keeps the newest reading; a
   refresh draws it as `CO2 612 ppm  72°  41%` bottom left and never waits for it or refreshes because of it. A reading
   older than three samples is dropped, and a missing or silent sensor is logged once and reopened every minute. The
   settings (temperature offset, altitude or pressure, self calibration) are sent at every start and never written to the
